@@ -8,8 +8,10 @@ Currently supports:
 - [x] Paged KV cache
 - [x] Async load/offload
 - [x] Qwen3 dense models
+- [ ] Weights in float 8 execution
 - [ ] Qwen3 MoE models
 - [ ] MoE caching
+- [ ] Better profiling
 - [ ] Turboquant
 
 
