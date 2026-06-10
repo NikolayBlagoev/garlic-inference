@@ -1,7 +1,4 @@
 #include "simple-ops.cuh"
-#include <thrust/device_ptr.h>
-#include <thrust/fill.h>
-
 
 __global__ void transpose_kernel(
     const char* __restrict__ src,
@@ -73,27 +70,27 @@ Tensor transpose(const Tensor& inp, int d0, int d1) {
     return out;
 }
 
+__global__ void fill_kernel_f32(float* data, float val, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) data[i] = val;
+}
+
+__global__ void fill_kernel_bf16(__nv_bfloat16* data, __nv_bfloat16 val, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) data[i] = val;
+}
+
 void fill_inplace(Tensor& t, float val){
     if(!t._data) return;
     if(!t._data->initialized) return;
-    
+    int N = t.num_elements();
+    int threads = 256, blocks = (N + threads - 1) / threads;
+
     if(t.dtype() == CUDA_R_32F){
-
-        auto ptr = thrust::device_ptr<float>((float*)(t.data()));
-        thrust::fill(ptr, ptr + t.num_elements(), val);
-
+        fill_kernel_f32<<<blocks, threads>>>((float*)t.data(), val, N);
     }else if(t.dtype() == CUDA_R_16BF){
-
-        auto ptr = thrust::device_ptr<__nv_bfloat16>((__nv_bfloat16*)(t.data()));
-        thrust::fill(ptr, ptr + t.num_elements(), __nv_bfloat16(val));
-
-    }else if(t.dtype() == CUDA_R_8F_E4M3){
-        t.update_scale(val / 448.0f);
-        auto ptr = thrust::device_ptr<__nv_fp8_e4m3>((__nv_fp8_e4m3*)(t.data()));
-        thrust::fill(ptr, ptr + t.num_elements(), __nv_fp8_e4m3(448.0f));
-
+        fill_kernel_bf16<<<blocks, threads>>>((__nv_bfloat16*)t.data(), __nv_bfloat16(val), N);
     }
-
 }
 // Processes 4 floats per thread: one float4 load, one uint64 store.
 __global__ void arange_kernel(

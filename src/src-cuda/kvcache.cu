@@ -54,10 +54,9 @@ void KVCache::prepare_table(int seql){
         }
     }
 
-        
-    cudaMemcpyAsync(page_table, host_page_table,
+    cudaMemcpy(page_table, host_page_table,
                 (size_t)batch_size * max_pages_per_seq * sizeof(int),
-                cudaMemcpyHostToDevice, get_load_offload_stream());
+                cudaMemcpyHostToDevice);
 }
 void KVCache::add_kv(const Tensor& new_k, const Tensor& new_v) {
     

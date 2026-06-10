@@ -18,9 +18,17 @@ using std::chrono::microseconds;
 #include "profiler.h"
 _TIMING_RESULTS tmrs{};
 #include "qwen3.h"
+#include <nvml.h>
+
 
 
 int main() {
+    nvmlInit();
+    nvmlDevice_t device;
+    nvmlDeviceGetHandleByIndex(0, &device);
+    unsigned long long energy_before, energy_after;
+    nvmlDeviceGetTotalEnergyConsumption(device, &energy_before);
+    cudaDeviceSynchronize();
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-4b");
     Qwen3Config config = Qwen3Config::from_pretrained("qwen3-4b");
     Qwen3 model = Qwen3::from_pretrained("qwen3-4b");
@@ -52,7 +60,9 @@ int main() {
     auto tm1 = high_resolution_clock::now();
     int seq_len = x.shape[1];
     engine.get_graph(seq_len);
+    
     for(int j = 0; j < 601; j++){
+        
         seq_len = x.shape[1];
         for(auto& kv_page : kvcaches) TIME_PROFILE(kv_page.prepare_table(seq_len), &tmrs.kv_cache_prepare);
         
@@ -62,7 +72,9 @@ int main() {
         auto ret = argmax(logits, x);
         auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
         tmrs.argmax += delta2.count();
-        std::cout << tokenizer.decode(ret);
+
+        tm2 = high_resolution_clock::now();
+        std::cout << encode.size() + j <<": "<<tokenizer.decode(ret) << std::endl;
 
         if(j == 0){
             x = Tensor({1,1}, CUDA_R_32U, 0);
@@ -78,11 +90,21 @@ int main() {
             engine.get_graph(1);
             tm1 = high_resolution_clock::now();
         } 
+        delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
+        tmrs.misc += delta2.count();
+        
+        
 
     }
-    
-    
     std::cout<<std::endl;
+    cudaDeviceSynchronize();  // required — GPU work must be done before sampling
+    // ----------------------------
+
+    nvmlDeviceGetTotalEnergyConsumption(device, &energy_after);
+    double joules = (energy_after - energy_before) / 1000.0;  // mJ → J
+    std::cout<<std::endl<<joules<<"J"<<std::endl;
+    
+    
     auto delta = duration_cast<milliseconds>(high_resolution_clock::now() - tm1);
     std::cout << "Time: " << delta.count() << std::endl;
     float s = (float) delta.count() / 1000.0f;
@@ -115,5 +137,7 @@ int main() {
     std::cout<< "MLP element wise: " << tmrs.mlp_elmwise / (1000.0 * 1000.0) << std::endl;
     std::cout<< "MLP inits: " << tmrs.mlp_inits / (1000.0 * 1000.0) << std::endl;
 
+    nvmlShutdown();
+    std::cout<< "MISC: " << tmrs.misc / (1000.0 * 1000.0) << std::endl;
     return 0;
 }

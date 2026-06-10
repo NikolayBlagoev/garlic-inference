@@ -145,5 +145,8 @@ void apply_rotary_pos_emb(Tensor& x, const Tensor& cos, const Tensor& sin){
     } else if (x.dtype() == CUDA_R_16BF){
         apply_rotary_pos_emb_kernel<__nv_bfloat16><<<blocks,threads>>>(
             (__nv_bfloat16*) x.data(), cos_ptr, sin_ptr, B, S, num_heads, head_dim);
+    } else if (x.dtype() == CUDA_R_16F){
+        apply_rotary_pos_emb_kernel<__half><<<blocks,threads>>>(
+            (__half*) x.data(), cos_ptr, sin_ptr, B, S, num_heads, head_dim);
     }
 }

@@ -8,6 +8,7 @@
 #include <cuda_fp8.h>
 #endif
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <iostream>
 #include <memory>
 
@@ -31,8 +32,6 @@ static cudaStream_t get_load_offload_stream(){
 
 struct DataView {
     void* data;
-    float* scale; // need this for scaling in case of float8
-    float scale_val = 1.0f;
     bool on_cpu = false;
     bool initialized = false;
     long long num_elements;
@@ -43,16 +42,14 @@ struct DataView {
 
     };
 
-    DataView(cudaDataType_t dtype, long long num_elements, int device = 0, bool on_cpu = false, bool initialized = true, float scale_val = 1.0f) : 
-        dtype(dtype), device(device), on_cpu(on_cpu), initialized(initialized), scale_val(scale_val), num_elements(num_elements){
+    DataView(cudaDataType_t dtype, long long num_elements, int device = 0, bool on_cpu = false, bool initialized = true) : 
+        dtype(dtype), device(device), on_cpu(on_cpu), initialized(initialized), num_elements(num_elements){
         if(!on_cpu && initialized){
             cudaSetDevice(device);
             cudaMalloc(&data, num_elements * element_size(dtype));
-            cudaMalloc(&scale, sizeof(float));
-            cudaMemcpy(scale, &scale_val, sizeof(float), cudaMemcpyHostToDevice);
         }else if(on_cpu && initialized){
             data = malloc(num_elements * element_size(dtype));
-            scale = &scale_val;
+            
         }
     }
 
@@ -62,30 +59,6 @@ struct DataView {
         initialized = true;
         on_cpu = false;
         cudaMalloc(&data, num_elements * element_size(dtype));
-        cudaMalloc(&scale, sizeof(float));
-        cudaMemcpy(scale, &scale_val, sizeof(float), cudaMemcpyHostToDevice);
-    }
-
-    void update_scale(){
-        if(on_cpu){
-            scale_val = *scale;
-            scale = &scale_val;
-        }else{
-            float* tmp = (float*) malloc(sizeof(float));
-            cudaMemcpy(tmp,scale, sizeof(float), cudaMemcpyDeviceToHost);
-            scale_val = *tmp;
-            ::free(tmp);
-        }
-    }
-
-    void update_scale(float val){
-        scale_val = val;
-        if(on_cpu){
-            scale = &scale_val; // might be redundant tbh
-        }else{
-            cudaMemcpy(scale, &scale_val, sizeof(float), cudaMemcpyHostToDevice);
-        }
-            
     }
 
     void free(){
@@ -96,10 +69,9 @@ struct DataView {
         } else {
             cudaSetDevice(device);
             cudaFreeAsync(data, get_load_offload_stream());
-            cudaFreeAsync(scale, get_load_offload_stream());
+            
         }
         data = nullptr;
-        scale = nullptr;
     }
     template<typename T>
     void set_data(std::vector<T>& buffer, size_t n_bytes){
@@ -111,7 +83,7 @@ struct DataView {
     }
 
     static DataView make_like(DataView& o){
-        return DataView(o.dtype, o.num_elements, o.device, o.on_cpu, o.initialized, o.scale_val);
+        return DataView(o.dtype, o.num_elements, o.device, o.on_cpu, o.initialized);
     }
 
     static size_t element_size(cudaDataType_t dtype) {
@@ -139,12 +111,15 @@ struct DataView {
 };
 
 
+
 // *For now support - float8, bfloat16, float32, and uint32*
 // hurm... one day I might need non-contigious tensors...
 // this will require restructuring of other stuff in the codebase
 struct Tensor {
         std::shared_ptr<DataView>  _data;
-        std::vector<int>        shape;
+        std::shared_ptr<DataView>  _scale;
+        std::vector<int>            shape;
+        std::vector<int>            shape_scale;
         // TODO: IN THE FUTURE I WANT STRIDE ADDED TOO TO SUPPORT DIFFERENT VIEWS OF THE SAME TENSOR
         // TODO: WHAT IF NOT CONTIGIOUS VIEW?
 
@@ -156,9 +131,13 @@ struct Tensor {
             
         }
 
-        Tensor(std::vector<int> shape, cudaDataType_t dtype, int device = 0, bool on_cpu = false, bool initialized = true, float scale_val = 1.0f)
+        Tensor(std::vector<int> shape, std::shared_ptr<DataView> dv) : shape(shape){
+            _data = dv;
+        }
+
+        Tensor(std::vector<int> shape, cudaDataType_t dtype, int device = 0, bool on_cpu = false, bool initialized = true)
             : shape(shape) {
-            _data = std::make_shared<DataView>(dtype, num_elements(), device, on_cpu, initialized, scale_val);
+            _data = std::make_shared<DataView>(dtype, num_elements(), device, on_cpu, initialized);
         }
 
         // shallow copy operation
@@ -166,7 +145,9 @@ struct Tensor {
         Tensor(const Tensor& o) {
             if (this != &o) {
                 _data = o._data; 
+                _scale = o._scale; 
                 shape = o.shape; 
+                shape_scale = o.shape_scale;
             }
         }
 
@@ -176,14 +157,19 @@ struct Tensor {
         Tensor(Tensor&& o) noexcept {
             if (this != &o) {
                 _data = o._data; 
+                _scale = o._scale;
                 shape = std::move(o.shape); 
+                shape_scale = std::move(o.shape_scale);
+                
             }
         }
 
         Tensor& operator=(const Tensor& o) {
             if (this != &o) {
                 _data = o._data;
+                _scale = o._scale;
                 shape = o.shape;
+                shape_scale = o.shape_scale;
             }
             return *this;
         }
@@ -193,7 +179,9 @@ struct Tensor {
         Tensor& operator=(Tensor&& o) noexcept {
             if (this != &o) {
                 _data = o._data; 
+                _scale = o._scale;
                 shape = std::move(o.shape); 
+                shape_scale = std::move(o.shape_scale);
             }
             return *this;
         }
@@ -216,6 +204,7 @@ struct Tensor {
 
         void free() {
             _data = nullptr;
+            _scale = nullptr;
         }
 
         ~Tensor(){
@@ -237,13 +226,6 @@ struct Tensor {
             return _data->dtype;
         }
 
-        float* scale() const {
-            return _data->scale;
-        }
-
-        float scale_val() const {
-            return _data->scale_val;
-        }
 
         bool initialized() const {
             return _data->initialized;
@@ -272,6 +254,16 @@ struct Tensor {
                 std::cout << std::endl;
             }else if(t.dtype() == CUDA_R_16BF){
                 std::vector<__nv_bfloat16> h(elms);
+                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
+                
+                for(int i = 0; i < elms; i++){
+                    
+                    std::cout << (float)h[i]<<" ";
+                }
+                std::cout << std::endl;
+
+            }else if(t.dtype() == CUDA_R_16F){
+                std::vector<__half> h(elms);
                 cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
                 
                 for(int i = 0; i < elms; i++){
@@ -327,12 +319,45 @@ struct Tensor {
             CUDA_CHECK(cudaMemcpy(dst._data->data, _data->data, bytes, cudaMemcpyDeviceToDevice));
         }
 
-        void update_scale(float val){
-            _data->update_scale(val);
+        void update_scale(std::vector<int> shape, DataView dv){
+            _scale = std::make_shared<DataView>(dv);
+            shape_scale = shape;
         }
 
-        void update_scale(){
-            _data->update_scale();
+        void update_scale(std::vector<int> shape){
+            shape_scale = shape;
+            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), on_cpu(), initialized());
+        }
+        // Returns true if a new allocation was made (caller should zero extra rows if needed).
+        bool lazy_update_scale(std::vector<int> new_shape){
+            if (_scale && shape_scale == new_shape) return false;
+            update_scale(new_shape);
+            return true;
+        }
+        // template<typename T>
+        // void set_data(std::vector<T>& buffer, size_t n_bytes){
+        //     _data->set_data<T>(buffer, n_bytes);
+        // }
+        template<typename T>
+        void update_scale(std::vector<int> shape, std::vector<T>& buffer, size_t n_bytes){
+            shape_scale = shape;
+            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), on_cpu(), initialized());
+            _scale->set_data<T>(buffer, n_bytes);
+
+        }
+
+        float* scale() const{
+            if(!_scale) return nullptr;
+            return (float*) _scale->data;
+        }
+
+        int ndim_scale() const { return (int)shape_scale.size(); }
+        
+        int num_elements_scale() const {
+            if(shape_scale.empty()) return 0;
+            int n = 1;
+            for(int d : shape_scale) n *= d;
+            return n;
         }
         
 

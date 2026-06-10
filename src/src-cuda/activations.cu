@@ -35,16 +35,38 @@ __global__ void silu_kernel_bf16(
     }
 }
 
+__global__ void silu_kernel_f16(
+    __half* __restrict__ x,
+    long long N) {
 
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i + 3 < N) {
+        __half2 v = *reinterpret_cast<const __half2*>(x + i);
+        *reinterpret_cast<__half2*>(x + i) = __half2(__half(silu(v.x)), __half(silu(v.y)));
+        v = *reinterpret_cast<const __half2*>(x + i + 2);
+        *reinterpret_cast<__half2*>(x + i + 2) = __half2(__half(silu(v.x)), __half(silu(v.y)));
+    } else {
+        for (; i < N; i++)
+            x[i] = __half(silu(x[i]));
+    }
+}
 void silu(Tensor& x) {
-    const long long N = x.num_elements();
-    const int threads = 256;
-    const int blocks = (N / 4 + threads - 1) / threads;
+    
     if (x.dtype() == CUDA_R_32F) {
-        
+        const long long N = x.num_elements();
+        const int threads = 256;
+        const int blocks = (N / 4 + threads - 1) / threads;
         silu_kernel_f32<<<blocks, threads>>>((float*)x.data(),  N);
     } else if (x.dtype() == CUDA_R_16BF) {
+        const long long N = x.num_elements();
+        const int threads = 256;
+        const int blocks = (N / 4 + threads - 1) / threads;
         silu_kernel_bf16<<<blocks, threads>>>((__nv_bfloat16*)x.data(),  N);
+    } else if (x.dtype() == CUDA_R_16F) {
+        const long long N = x.num_elements();
+        const int threads = 256;
+        const int blocks = (N / 4 + threads - 1) / threads;
+        silu_kernel_f16<<<blocks, threads>>>((__half*)x.data(),  N);
     }
 
 }

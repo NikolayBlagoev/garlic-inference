@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include "cuda-common.cuh"
 using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::duration;
@@ -31,6 +32,7 @@ struct _TIMING_RESULTS{
     long long selfattn_posembs;
     long long selfattn_transpose;
     long long selfattn_attn;
+    long long misc;
 };
 
 extern _TIMING_RESULTS tmrs;

@@ -105,18 +105,23 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
     int B = hidden.shape[0];
     int S = hidden.shape[1];
     int D = hidden.shape[2];
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF),&tmrs.selfattn_cast);
-    
+    Q.shape = {B, S, num_heads*head_dim};
+    K.shape = {B, S, num_kv_heads*head_dim};
+    V.shape = {B, S, num_kv_heads*head_dim};
     // std::cout << "Q "<< Q.dtype() << " " << q_proj.dtype()  << std::endl;
     // std::cout << "Q "<< Q.shape[0] << " " <<Q.shape[1] << " " <<Q.shape[2] << std::endl;
     // std::cout << "Q "<< q_proj.shape[0] << " " <<q_proj.shape[1] << " " <<q_proj.shape[2] << std::endl;
     // std::cout << "Q "<< hidden.shape[0] << " " <<hidden.shape[1] << " " <<hidden.shape[2] << std::endl;
     // Tensor::list_values(q_proj, 20);
-    TIME_PROFILE(matmul(Q, hidden, q_proj), &tmrs.selfattn_projections);
+    // std::cout<<"Q"<<std::endl;
+    TIME_PROFILE(matmul(Q, hidden, q_proj, false), &tmrs.selfattn_projections);
+    
     // std::cout << "Q value: ";
     // Tensor::list_values(Q, 20);
-    TIME_PROFILE(matmul(K, hidden, k_proj), &tmrs.selfattn_projections);
-    TIME_PROFILE(matmul(V, hidden, v_proj), &tmrs.selfattn_projections);
+    // std::cout<<"K"<<std::endl;
+    TIME_PROFILE(matmul(K, hidden, k_proj, true), &tmrs.selfattn_projections);
+    // std::cout<<"V"<<std::endl;
+    TIME_PROFILE(matmul(V, hidden, v_proj, true), &tmrs.selfattn_projections);
     
     TIME_PROFILE(rmsnorm(Q, q_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);
     TIME_PROFILE(rmsnorm(K, k_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);
@@ -126,8 +131,8 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
     V.shape = {B, S, num_kv_heads, head_dim};
 
     // RoPE expects [B, S, num_heads, head_dim]; apply before transposing
-    TIME_PROFILE(apply_rotary_pos_emb(Q, cos_emb, sin_emb),&tmrs.selfattn_posembs); 
-    TIME_PROFILE(apply_rotary_pos_emb(K, cos_emb, sin_emb),&tmrs.selfattn_posembs); 
+    TIME_PROFILE(apply_rotary_pos_emb(Q, cos_emb, sin_emb),&tmrs.selfattn_posembs);
+    TIME_PROFILE(apply_rotary_pos_emb(K, cos_emb, sin_emb),&tmrs.selfattn_posembs);
 
     TIME_PROFILE(Q = transpose(Q, 1, 2), &tmrs.selfattn_transpose);   // [B, num_heads, S, head_dim]
     TIME_PROFILE(K = transpose(K, 1, 2), &tmrs.selfattn_transpose);    // [B, num_kv_heads, S, head_dim]
@@ -143,23 +148,21 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
     TIME_PROFILE(engine.run(O, Q, layer_kv_cache), &tmrs.selfattn_attn);
     // std::cout << "O value: ";
     // Tensor::list_values(O, 20);
-
+    
     O = transpose(O, 1, 2);   // [B, S, num_heads, head_dim]
     O.shape = {B, S, num_heads * head_dim};
-
+    // std::cout << "O "<< O.dtype() << " " << o_proj.dtype()  << std::endl;
     // Tensor output = Tensor({B, S, D}, CUDA_R_16BF, hidden.device());
     TIME_PROFILE(matmul(output, O, o_proj), &tmrs.selfattn_projections);
     // std::cout << "output value: ";
     // Tensor::list_values(output, 20);
+    // std::exit(1);
     return output;
 }
 
 Tensor Qwen3MLP::forward(const Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down){
-    int B = hidden.shape[0];
-    int S = hidden.shape[1];
-    int D = hidden.shape[2];
     Tensor x;
-    TIME_PROFILE(x = hidden.cast_to(gate_proj.dtype()),&tmrs.mlp_cast);
+    TIME_PROFILE(x = hidden.cast_to(CUDA_R_16BF),&tmrs.mlp_cast);
     
     
     TIME_PROFILE(matmul(gate, x, gate_proj),&tmrs.mlp_matmul);
@@ -186,7 +189,7 @@ Tensor Qwen3DecoderLayer::forward(
     Tensor& gate,
     Tensor& up,
     Tensor& down){
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF), &tmrs.casting);
+    
     // std::cout << idx << std::endl;
     // std::cout << "Entry "<< hidden.dtype() << std::endl;
     // Tensor::list_values(hidden, 20);
@@ -212,9 +215,9 @@ Tensor Qwen3DecoderLayer::forward(
     
     // std::cout << "POST MLP: "<< hidden.dtype() << std::endl;
     // Tensor::list_values(hidden, 20);
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF), &tmrs.casting);
-    // CUDA_CHECK(cudaGetLastError()); 
-    // hidden = hidden.cast_to(residual.dtype);
+    // TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF), &tmrs.casting);
+    CUDA_CHECK(cudaGetLastError()); 
+    
     CUDA_CHECK(cudaGetLastError()); 
     TIME_PROFILE(add_inplace(hidden, residual), &tmrs.addinplace);
     // std::cout << "POST ADD: "<< hidden.dtype() << std::endl;
@@ -231,13 +234,13 @@ Tensor Qwen3::forward(
     const int B = position_ids.shape[0];
     const int S = position_ids.shape[1];
     CUDA_CHECK(cudaGetLastError()); 
-    Tensor hidden({B, S, config.hidden_size}, CUDA_R_16BF, input_ids.device());
+    Tensor hidden({B, S, config.hidden_size}, lm_head.dtype(), input_ids.device());
     // kernel is Batch irrelevant :)
     TIME_PROFILE(embedding_forward(hidden, input_ids, embed_tokens), &tmrs.embedding);
     // Tensor::list_values(hidden, 20);
 
     CUDA_CHECK(cudaGetLastError()); 
-    // const std::vector<int> out_shape = {B, S, config.head_dim};
+        // const std::vector<int> out_shape = {B, S, config.head_dim};
     Tensor cos_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
     Tensor sin_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
     TIME_PROFILE(rope_forward(hidden, position_ids, rotary_embedding.inv_freq, cos_emb, sin_emb), &tmrs.rope_forward);
@@ -258,11 +261,14 @@ Tensor Qwen3::forward(
     Tensor up({B, S, config.intermediate_size}, hidden.dtype(), hidden.device());
     Tensor down({B, S, config.hidden_size}, hidden.dtype(), hidden.device());
     tmrs.mlp_inits += duration_cast<microseconds>(high_resolution_clock::now() - tm1).count();
+    // std::cout << "Entering loop" << std::endl;
+    // cudaStreamSynchronize(get_load_offload_stream());
     for (auto& layer : layers){
-        hidden = layer.forward(hidden, cos_emb, sin_emb, kvcache, engine, residual, Q, K, V, O, output, gate, up, down);
+                hidden = layer.forward(hidden, cos_emb, sin_emb, kvcache, engine, residual, Q, K, V, O, output, gate, up, down);
         // Tensor::list_values(hidden, 20);
 
     }
+    // std::cout << "POST LOOP" << std::endl;
     CUDA_CHECK(cudaGetLastError()); 
     TIME_PROFILE(rmsnorm(hidden, norm, config.rms_norm_eps),&tmrs.norm);
     CUDA_CHECK(cudaGetLastError()); 

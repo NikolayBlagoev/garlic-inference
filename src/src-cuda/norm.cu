@@ -77,23 +77,27 @@ void rmsnorm(Tensor& x, const Tensor& weight, float eps, int dim_size) {
         rmsnorm_kernel<__nv_bfloat16, __nv_bfloat16><<<stride, block, smem_sz>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)weight.data(),
             dim_size, eps, nullptr, nullptr);
+    } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16F) {
+        rmsnorm_kernel<__half, __half><<<stride, block, smem_sz>>>(
+            (__half*)x.data(), (const __half*)weight.data(),
+            dim_size, eps, nullptr, nullptr);
     }
-#ifdef FP8_AVAILABLE
-    else if (x.dtype() == CUDA_R_8F_E4M3 && weight.dtype() == CUDA_R_8F_E4M3) {
-        rmsnorm_kernel<__nv_fp8_e4m3, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
-            (__nv_fp8_e4m3*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
-            dim_size, eps, x._data->scale, weight._data->scale);
-    } else if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_8F_E4M3) {
+// #ifdef FP8_AVAILABLE
+//     else if (x.dtype() == CUDA_R_8F_E4M3 && weight.dtype() == CUDA_R_8F_E4M3) {
+//         rmsnorm_kernel<__nv_fp8_e4m3, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
+//             (__nv_fp8_e4m3*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
+//             dim_size, eps, x._data->scale, weight._data->scale);
+//     } else if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_8F_E4M3) {
         
-        rmsnorm_kernel<float, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
-            (float*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
-            dim_size, eps, nullptr, weight._data->scale);
-    } else if (x.dtype() == CUDA_R_16BF && weight.dtype() == CUDA_R_8F_E4M3) {
+//         rmsnorm_kernel<float, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
+//             (float*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
+//             dim_size, eps, nullptr, weight._data->scale);
+//     } else if (x.dtype() == CUDA_R_16BF && weight.dtype() == CUDA_R_8F_E4M3) {
 
-        rmsnorm_kernel<__nv_bfloat16, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
-            (__nv_bfloat16*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
-            dim_size, eps, nullptr, weight._data->scale);
-    }
-#endif
+//         rmsnorm_kernel<__nv_bfloat16, __nv_fp8_e4m3><<<stride, block, smem_sz>>>(
+//             (__nv_bfloat16*)x.data(), (const __nv_fp8_e4m3*)weight.data(),
+//             dim_size, eps, nullptr, weight._data->scale);
+//     }
+// #endif
     
 }

@@ -63,7 +63,7 @@ template<int width = WARP_SIZE>
 __device__ __forceinline__ float warp_reduce_max(float x) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x = MAX(__shfl_xor_sync(0xffffffff, x, offset, width), x);
+        x = fmaxf(__shfl_xor_sync(0xffffffff, x, offset, width), x);
     }
     return x;
 }
