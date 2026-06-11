@@ -20,19 +20,37 @@ _TIMING_RESULTS tmrs{};
 #include "qwen3.h"
 #include <nvml.h>
 
-
-
+#include <thread>
 int main() {
     nvmlInit();
     nvmlDevice_t device;
     nvmlDeviceGetHandleByIndex(0, &device);
-    unsigned long long energy_before, energy_after;
-    nvmlDeviceGetTotalEnergyConsumption(device, &energy_before);
-    cudaDeviceSynchronize();
+    
+    double joules, tm_ptr, watt_ptr;
+    {
+        using namespace std::chrono_literals;
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        std::this_thread::sleep_for(10000ms);
+    }
+    std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-4b");
     Qwen3Config config = Qwen3Config::from_pretrained("qwen3-4b");
-    Qwen3 model = Qwen3::from_pretrained("qwen3-4b");
-
+    
+    
+    Qwen3 model;
+    {
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        model = Qwen3::from_pretrained("qwen3-4b");
+    } 
+    
+    
+    std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    {
+        using namespace std::chrono_literals;
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        std::this_thread::sleep_for(10000ms);
+    }
+    std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     auto encode = tokenizer.encode("Hello there world! It is so nice to meet you all!");
     
     Tensor x({1, encode.size()}, CUDA_R_32U, 0);
@@ -44,15 +62,25 @@ int main() {
     arrange(pos_ids, 0, 1);
 
     int batch_size = x.shape[0];
-    const int max_pages = 128;
-    const int max_pages_per_seq = 128;
-
+    const int max_pages = 512;
+    const int max_pages_per_seq = 256;
+    
     std::vector<KVCache> kvcaches;
-    kvcaches.reserve(config.num_hidden_layers);
-    for (int i = 0; i < config.num_hidden_layers; ++i) {
-        kvcaches.emplace_back(config.num_key_value_heads, config.head_dim,
-                                max_pages, batch_size, max_pages_per_seq);
+    {
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        kvcaches.reserve(config.num_hidden_layers);
+        for (int i = 0; i < config.num_hidden_layers; ++i) {
+            kvcaches.emplace_back(config.num_key_value_heads, config.head_dim,
+                                    max_pages, batch_size, max_pages_per_seq);
+        }
     }
+    std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    {
+        using namespace std::chrono_literals;
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        std::this_thread::sleep_for(10000ms);
+    }
+    std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     std::cout << std::endl;
     FlashAttnEngine engine(batch_size, config.num_attention_heads,
                             config.num_key_value_heads,
@@ -60,51 +88,44 @@ int main() {
     auto tm1 = high_resolution_clock::now();
     int seq_len = x.shape[1];
     engine.get_graph(seq_len);
-    
-    for(int j = 0; j < 601; j++){
-        
-        seq_len = x.shape[1];
-        for(auto& kv_page : kvcaches) TIME_PROFILE(kv_page.prepare_table(seq_len), &tmrs.kv_cache_prepare);
-        
-        
-        Tensor logits = model.forward(x, pos_ids, kvcaches, engine);
-        auto tm2 = high_resolution_clock::now();
-        auto ret = argmax(logits, x);
-        auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
-        tmrs.argmax += delta2.count();
+    {
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        for(int j = 0; j < 601; j++){
+            // std::cout<<j<<std::endl;
+            seq_len = x.shape[1];
+            for(auto& kv_page : kvcaches) TIME_PROFILE(kv_page.prepare_table(seq_len), &tmrs.kv_cache_prepare);
+            
+            
+            Tensor logits = model.forward(x, pos_ids, kvcaches, engine);
+            auto tm2 = high_resolution_clock::now();
+            auto ret = argmax(logits, x);
+            auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
+            tmrs.argmax += delta2.count();
+            tm2 = high_resolution_clock::now();
+            // std::cout << tokenizer.decode(ret);
 
-        tm2 = high_resolution_clock::now();
-        std::cout << encode.size() + j <<": "<<tokenizer.decode(ret) << std::endl;
+            if(j == 0){
+                x = Tensor({1,1}, CUDA_R_32U, 0);
+                std::vector<uint32_t> tmp_data = {ret[ret.size()-1]};
+                x.set_data<uint32_t>(tmp_data, 4);
+            }
 
-        if(j == 0){
-            x = Tensor({1,1}, CUDA_R_32U, 0);
-            std::vector<uint32_t> tmp_data = {ret[ret.size()-1]};
-            x.set_data<uint32_t>(tmp_data, 4);
+            // cudaStreamSynchronize(get_load_offload_stream());
+            pos_ids = Tensor({1,1}, CUDA_R_32U, 0);
+            std::vector<uint32_t> tmp_data = {(uint32_t)(encode.size() + j)};
+            pos_ids.set_data<uint32_t>(tmp_data, 4);
+            if(j == 0){
+                engine.get_graph(1);
+                tm1 = high_resolution_clock::now();
+            } 
+            delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
+            tmrs.misc += delta2.count();
+
         }
-
-        
-        pos_ids = Tensor({1,1}, CUDA_R_32U, 0);
-        std::vector<uint32_t> tmp_data = {(uint32_t)(encode.size() + j)};
-        pos_ids.set_data<uint32_t>(tmp_data, 4);
-        if(j == 0){
-            engine.get_graph(1);
-            tm1 = high_resolution_clock::now();
-        } 
-        delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
-        tmrs.misc += delta2.count();
-        
-        
-
     }
+    std::cout<<"INFERENCE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    
     std::cout<<std::endl;
-    cudaDeviceSynchronize();  // required — GPU work must be done before sampling
-    // ----------------------------
-
-    nvmlDeviceGetTotalEnergyConsumption(device, &energy_after);
-    double joules = (energy_after - energy_before) / 1000.0;  // mJ → J
-    std::cout<<std::endl<<joules<<"J"<<std::endl;
-    
-    
     auto delta = duration_cast<milliseconds>(high_resolution_clock::now() - tm1);
     std::cout << "Time: " << delta.count() << std::endl;
     float s = (float) delta.count() / 1000.0f;
@@ -137,7 +158,7 @@ int main() {
     std::cout<< "MLP element wise: " << tmrs.mlp_elmwise / (1000.0 * 1000.0) << std::endl;
     std::cout<< "MLP inits: " << tmrs.mlp_inits / (1000.0 * 1000.0) << std::endl;
 
-    nvmlShutdown();
+
     std::cout<< "MISC: " << tmrs.misc / (1000.0 * 1000.0) << std::endl;
     return 0;
 }

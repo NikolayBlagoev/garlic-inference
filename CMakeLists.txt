@@ -13,6 +13,7 @@ if("${RUN_TEST}" STREQUAL "qwen3")
     src/src-cuda/argmax.cu
     src/src-cuda/mat-ops.cu
     src/src-cuda/quant.cu
+    src/src-cuda/cutlass-runner.cu
     src/src-cuda/tensor.cu
     src/src-cuda/norm.cu
     src/src-cuda/rope.cu

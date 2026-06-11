@@ -270,19 +270,28 @@ __global__ void fp8_gemv_groupwise_bf16_kernel(
 
     for (int kg = 0; kg < scale_K; kg++) {
         float scale = __ldg(W_scale + s_col * scale_K + kg);
-        const int k0 = kg * factor;
-        const int   k_end = MIN(k0 + factor, K);
+        const int k = kg * kGemvSK + tx * 4;
         float partial = 0.0f;
-        for (int k = k0 + tx; k < k_end; k += 32){
-            partial = fmaf(static_cast<float>(w_row[k]), __bfloat162float(x_row[k]), partial);
-
+        if (k + 3 < K) {
+            __nv_fp8x4_e4m3 w4 = *reinterpret_cast<const __nv_fp8x4_e4m3*>(w_row + k);
             
+            __nv_bfloat162 x01 = *reinterpret_cast<const __nv_bfloat162*>(x_row + k);
+            __nv_bfloat162 x23 = *reinterpret_cast<const __nv_bfloat162*>(x_row + k + 2);
+
+            float4 wf = float4(w4);
+            float2 xf01 = __bfloat1622float2(x01);
+            float2 xf23 = __bfloat1622float2(x23);
+
+            partial = fmaf(wf.x, xf01.x, partial);
+            partial = fmaf(wf.y, xf01.y, partial);
+            partial = fmaf(wf.z, xf23.x, partial);
+            partial = fmaf(wf.w, xf23.y, partial);
+        } else {
+            for (int kk = k; kk < K && kk < k + 4; kk++)
+                partial = fmaf(float(w_row[kk]), __bfloat162float(x_row[kk]), partial);
         }
         acc = fmaf(partial,scale,acc);
-            
     }
-
-    
     acc = warp_reduce_sum<32>(acc);
     
     if (tx == 0)
@@ -313,7 +322,7 @@ void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
     int N = W.shape[0];   // out_features
     int M = B * S;
     if(M > 0){
-        // return matmul_fp8_blockscale_dequant(y,x,W);
+        // return matmul_fp8_b lockscale_dequant(y,x,W);
         return fp8_gemv_groupwise_bf16(y,W,x);
     }
 #ifdef USE_CUTLASS_FP8
