@@ -1,0 +1,1 @@
+vllm serve qwen3-4b/ --max_model_len 2048
