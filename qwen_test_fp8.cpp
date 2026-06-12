@@ -10,6 +10,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
+
 using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::duration;
@@ -25,11 +26,11 @@ int main() {
     nvmlInit();
     nvmlDevice_t device;
     nvmlDeviceGetHandleByIndex(0, &device);
-    
+    bool use_cpu = true;
     double joules, tm_ptr, watt_ptr;
     {
         using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         std::this_thread::sleep_for(10000ms);
     }
     std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
@@ -39,7 +40,7 @@ int main() {
     
     Qwen3 model;
     {
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         model = Qwen3::from_pretrained("qwen3-4b-fp8");
     } 
     
@@ -47,7 +48,7 @@ int main() {
     std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     {
         using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         std::this_thread::sleep_for(10000ms);
     }
     std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
@@ -67,7 +68,7 @@ int main() {
     
     std::vector<KVCache> kvcaches;
     {
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         kvcaches.reserve(config.num_hidden_layers);
         for (int i = 0; i < config.num_hidden_layers; ++i) {
             kvcaches.emplace_back(config.num_key_value_heads, config.head_dim,
@@ -77,7 +78,7 @@ int main() {
     std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     {
         using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         std::this_thread::sleep_for(10000ms);
     }
     std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
@@ -89,7 +90,7 @@ int main() {
     int seq_len = x.shape[1];
     engine.get_graph(seq_len);
     {
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         for(int j = 0; j < 601; j++){
             // std::cout<<j<<std::endl;
             seq_len = x.shape[1];
