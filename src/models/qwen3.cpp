@@ -203,14 +203,12 @@ Tensor Qwen3DecoderLayer::forward(
     // std::cout << "POST ATTENTION: "<< hidden.dtype() << std::endl;
     // Tensor::list_values(hidden, 20);
     CUDA_CHECK(cudaGetLastError()); 
-    TIME_PROFILE(add_inplace(hidden, residual), &tmrs.addinplace);
-    // std::cout << "POST ADD: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
-    CUDA_CHECK(cudaGetLastError()); 
-    TIME_PROFILE(hidden.copy_into(residual), &tmrs.makecopy);
-    CUDA_CHECK(cudaGetLastError()); 
-    rmsnorm(hidden, post_attention_layernorm, rms_norm_eps);
-    
+    // TIME_PROFILE(add_inplace(hidden, residual), &tmrs.addinplace);
+    // CUDA_CHECK(cudaGetLastError()); 
+    // TIME_PROFILE(hidden.copy_into(residual), &tmrs.makecopy);
+    // CUDA_CHECK(cudaGetLastError()); 
+    // rmsnorm(hidden, post_attention_layernorm, rms_norm_eps);
+    TIME_PROFILE(rmsnorm_fused(hidden, residual, post_attention_layernorm, rms_norm_eps), &tmrs.makecopy);
     TIME_PROFILE(hidden = mlp.forward(hidden, gate, up, down), &tmrs.mlp);
     
     // std::cout << "POST MLP: "<< hidden.dtype() << std::endl;

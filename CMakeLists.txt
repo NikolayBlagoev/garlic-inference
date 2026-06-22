@@ -13,7 +13,7 @@ if("${RUN_TEST}" STREQUAL "qwen3")
     src/src-cuda/argmax.cu
     src/src-cuda/mat-ops.cu
     src/src-cuda/quant.cu
-    src/src-cuda/cutlass-runner.cu
+    # src/src-cuda/cutlass-runner.cu
     src/src-cuda/tensor.cu
     src/src-cuda/norm.cu
     src/src-cuda/rope.cu
@@ -33,7 +33,7 @@ elseif("${RUN_TEST}" STREQUAL "qwen3-fp8")
         src/src-cuda/argmax.cu
         src/src-cuda/mat-ops.cu
         src/src-cuda/quant.cu
-        src/src-cuda/cutlass-runner.cu
+        # src/src-cuda/cutlass-runner.cu
         src/src-cuda/tensor.cu
         src/src-cuda/norm.cu
         src/src-cuda/rope.cu
@@ -67,6 +67,5 @@ target_compile_options(runner PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-pth
 target_include_directories(runner PRIVATE
     src src/src-cuda src/tokenizers src/models
     src/external
-    src/external/tools/util/include
     src/external/cudnn-frontend/include
     ${CUDAToolkit_INCLUDE_DIRS})

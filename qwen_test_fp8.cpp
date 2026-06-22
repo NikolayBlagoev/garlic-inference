@@ -103,7 +103,7 @@ int main() {
             auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
             tmrs.argmax += delta2.count();
             tm2 = high_resolution_clock::now();
-            // std::cout << tokenizer.decode(ret);
+            std::cout << tokenizer.decode(ret);
 
             if(j == 0){
                 x = Tensor({1,1}, CUDA_R_32U, 0);

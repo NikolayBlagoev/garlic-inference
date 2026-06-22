@@ -1,4 +1,4 @@
-#include "cutlass-runner.cuh"
+// #include "cutlass-runner.cuh"
 #include "mat-ops.cuh"
 
 
@@ -322,32 +322,11 @@ void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
     int N = W.shape[0];   // out_features
     int M = B * S;
     if(M > 0){
-        // return matmul_fp8_b lockscale_dequant(y,x,W);
         return fp8_gemv_groupwise_bf16(y,W,x);
     }
-#ifdef USE_CUTLASS_FP8
-    {   
-        if(!reuse){
-            auto saved_shape = x.shape;
-            x.shape = {M, K};
-            // Allocate M_padded rows so CUTLASS TMA doesn't read past the buffer end.
-            int M_padded = (M + 7) & ~7;
-            int n = x.num_elements() * M_padded / M;
-            if (n > dequant_buffer_nelems || !dequant_buffer._data || dequant_buffer.dtype() != W.dtype()) {
-                dequant_buffer = Tensor({M_padded, K}, W.dtype(), W.device());
-                dequant_buffer_nelems = n;
-            }
-            dequant_buffer.shape = {M_padded, K};
-            
-            per_token_fp8_quantize(dequant_buffer, x, M_padded);
-            CUDA_CHECK(cudaGetLastError());
-            x.shape = saved_shape;
-        }
-        garlic::gemm_fp8_groupwise_bf16_sm120(y.data(), W.data(), W.scale(), dequant_buffer.data(), dequant_buffer.scale(), N, K, M, 1);
-    }
-#else
+
     matmul_fp8_blockscale_dequant(y,x,W);
-#endif
+
 
 }
 

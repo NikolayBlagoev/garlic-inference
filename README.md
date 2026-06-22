@@ -11,7 +11,7 @@ Currently supports:
 - [x] Weights in float 8 execution
 - [ ] Qwen3 MoE models
 - [ ] MoE caching
-- [ ] Better profiling
+- [x] Better profiling
 - [ ] Turboquant
 
 
