@@ -42,7 +42,37 @@ elseif("${RUN_TEST}" STREQUAL "qwen3-fp8")
         src/src-cuda/activations.cu
         src/src-cuda/kvcache.cu
 
-    )
+)
+elseif("${RUN_TEST}" STREQUAL "qwen3-moe")
+    # cmake -B build -DRUN_TEST=qwen3-moe && cmake --build build && ./build/runner
+    add_executable(runner
+        qwen_test_moe_fp8.cpp
+        src/models/qwen3.cpp
+        src/models/qwen3_moe.cpp
+        src/tokenizers/bpe.cpp
+        src/src-cuda/simple-ops.cu
+        src/src-cuda/argmax.cu
+        src/src-cuda/mat-ops.cu
+        src/src-cuda/quant.cu
+        src/src-cuda/moe.cu
+        # src/src-cuda/cutlass-runner.cu
+        src/src-cuda/tensor.cu
+        src/src-cuda/norm.cu
+        src/src-cuda/rope.cu
+        src/src-cuda/fattn.cu
+        src/src-cuda/embedding.cu
+        src/src-cuda/activations.cu
+        src/src-cuda/kvcache.cu
+
+)
+elseif("${RUN_TEST}" STREQUAL "top-k-test")
+    # cmake -B build -DRUN_TEST=top-k-test && cmake --build build && ./build/runner
+    add_executable(runner
+        top_k_test.cpp
+        src/src-cuda/argmax.cu
+        
+
+)
 endif()
 
 # export PATH=/usr/local/cuda-13.2/bin/:$PATH

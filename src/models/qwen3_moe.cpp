@@ -1,4 +1,4 @@
-#include "qwen3.h"
+#include "qwen3_moe.h"
 
 
 #include "../src-cuda/embedding.cuh"
@@ -8,8 +8,11 @@
 #include "../src-cuda/simple-ops.cuh"
 #include "../src-cuda/activations.cuh"
 #include "../src-cuda/fattn.cuh"
+#include "../src-cuda/moe.cuh"
+#include "../src-cuda/argmax.cuh"
 #include "../kvcache.h"
 #include "profiler.h"
+#include "moe-cache.h"
 #include <cuda_runtime.h>
 #include <fstream>
 #include <stdexcept>
@@ -24,7 +27,7 @@ namespace fs = std::filesystem;
 Qwen3MoeConfig Qwen3MoeConfig::from_pretrained(const std::string& hf_dir) {
     std::ifstream f(hf_dir + "/config.json");
     json cfg = json::parse(f);
-    Qwen3Config c;
+    Qwen3MoeConfig c;
     c.hidden_size = cfg["hidden_size"].get<int>();
     c.num_hidden_layers = cfg["num_hidden_layers"].get<int>();
     c.num_attention_heads = cfg["num_attention_heads"].get<int>();
@@ -56,15 +59,18 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
     model.lm_head = model.embed_tokens;
 
     model.layers.reserve(model.config.num_hidden_layers);
-    for (int i = 0; i < model.config.num_hidden_layers; ++i) {
+    
+    for (int i = 0; i < model.config.num_hidden_layers; i++) {
+        std::cout<<"LOADING LAYER "<<i<<std::endl;
         const std::string lp = "model.layers." + std::to_string(i) + ".";
 
         Qwen3MoeDecoderLayer layer;
         layer.idx = i;
         layer.rms_norm_eps = model.config.rms_norm_eps;
 
-        layer.mlp.intermediate_size = model.config.intermediate_size;
-
+        layer.mlp.moe_intermediate_size = model.config.moe_intermediate_size;
+        layer.mlp.num_experts_per_tok = model.config.num_experts_per_tok;
+        layer.mlp.num_experts = model.config.num_experts;
 
         layer.input_layernorm = wl.load(lp + "input_layernorm.weight", device);
         layer.post_attention_layernorm = wl.load(lp + "post_attention_layernorm.weight", device);
@@ -80,11 +86,60 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
 
         layer.self_attn.q_norm = wl.load(lp + "self_attn.q_norm.weight", device);
         layer.self_attn.k_norm = wl.load(lp + "self_attn.k_norm.weight", device);
-        
-        layer.mlp.gate_proj = wl.load(lp + "mlp.gate_proj.weight", device);
-        layer.mlp.up_proj = wl.load(lp + "mlp.up_proj.weight", device);
-        layer.mlp.down_proj = wl.load(lp + "mlp.down_proj.weight", device);
+        layer.mlp.gate = wl.load(lp + "mlp.gate.weight", device);
+        layer.mlp.layer_idx = i;
+        layer.mlp.gate_proj.resize(model.config.num_experts);
+        layer.mlp.up_proj.resize(model.config.num_experts);
+        layer.mlp.down_proj.resize(model.config.num_experts);
+        for (int j = 0; j < model.config.num_experts; j++) {
+            const std::string ep = lp + "mlp.experts." + std::to_string(j) + ".";
+            bool on_cpu = (i >= 4);
 
+            // peek at metadata to get shapes and dtype without loading
+            const WeightContainer& g_meta = wl.peek(ep + "gate_proj.weight");
+            const WeightContainer& u_meta = wl.peek(ep + "up_proj.weight");
+            const WeightContainer& d_meta = wl.peek(ep + "down_proj.weight");
+
+            long long g_elems = 1; for (int d : g_meta.shape) g_elems *= d;
+            long long u_elems = 1; for (int d : u_meta.shape) u_elems *= d;
+            long long d_elems = 1; for (int d : d_meta.shape) d_elems *= d;
+            long long total   = g_elems + u_elems + d_elems;
+            size_t    elem_sz = Tensor::element_size(g_meta.dtype);
+
+            // single contiguous allocation for gate + up + down
+            auto dv = std::make_shared<DataView>(g_meta.dtype, total, device, on_cpu);
+            wl.load_into(ep + "gate_proj.weight", *dv, 0);
+            wl.load_into(ep + "up_proj.weight",   *dv, (int)(g_elems * elem_sz));
+            wl.load_into(ep + "down_proj.weight",  *dv, (int)((g_elems + u_elems) * elem_sz));
+
+            layer.mlp.gate_proj[j] = Tensor(g_meta.shape, dv, 0);
+            layer.mlp.up_proj[j] = Tensor(u_meta.shape, dv, (uint64_t)(g_elems * elem_sz));
+            layer.mlp.down_proj[j] = Tensor(d_meta.shape, dv, (uint64_t)((g_elems + u_elems) * elem_sz));
+            // Tensor::list_values(layer.mlp.gate_proj[j],20);
+            // Tensor::list_values(layer.mlp.up_proj[j],20);
+            // Tensor::list_values(layer.mlp.down_proj[j],20);
+            // Tensor tmp = wl.load(ep + "gate_proj.weight", device);
+            // Tensor::list_values(tmp,20);
+            // tmp = wl.load(ep + "up_proj.weight", device);
+            // Tensor::list_values(tmp,20);
+            // tmp = wl.load(ep + "down_proj.weight", device);
+            // Tensor::list_values(tmp,20);
+            // load FP8 scales directly into each view
+            wl.load_scale(ep + "gate_proj.weight", layer.mlp.gate_proj[j]);
+            wl.load_scale(ep + "up_proj.weight",   layer.mlp.up_proj[j]);
+            wl.load_scale(ep + "down_proj.weight",  layer.mlp.down_proj[j]);
+            if(layer.mlp.down_proj[j]._scale == nullptr || layer.mlp.down_proj[j].scale() == nullptr) std::exit(2);
+            if(layer.mlp.up_proj[j]._scale == nullptr || layer.mlp.up_proj[j].scale() == nullptr) std::exit(2);
+            if(layer.mlp.gate_proj[j]._scale == nullptr || layer.mlp.gate_proj[j].scale() == nullptr) std::exit(2);
+            
+            // DataView::list_values(*layer.mlp.gate_proj[j]._scale);
+            // DataView::list_values(*layer.mlp.up_proj[j]._scale);
+            // DataView::list_values(*layer.mlp.down_proj[j]._scale);
+            // std::exit(1);
+            // one inform per expert — all three views share dv so offload/onload moves all three
+            JoseMurinho->inform(std::to_string(i) + "-" + std::to_string(j), layer.mlp.gate_proj[j]);
+        }
+        
         model.layers.push_back(std::move(layer));
     }
 
@@ -92,155 +147,163 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
 }
 
 
-Tensor Qwen3Attention::forward(Tensor& hidden,
+
+Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden){
+    int B = hidden.shape[0];
+    int S = hidden.shape[1];
+    int D = hidden.shape[2];
+    int T = B * S;
+
+    // Router: compute logits and select top-k experts
+    Tensor router_logits({B, S, num_experts}, hidden.dtype(), hidden.device());
+    Tensor router_scores({T, num_experts_per_tok}, CUDA_R_32F, hidden.device());
+    Tensor router_indices({T, num_experts_per_tok}, CUDA_R_32U, hidden.device());
+    // std::cout<<layer_idx<<std::endl;
+    // if(layer_idx == 30) std::cout << "[L30] gate dtype=" << (int)gate.dtype() << " hidden dtype=" << (int)hidden.dtype() << " hidden[0..3]=";
+    // if(layer_idx == 30) { cudaDeviceSynchronize(); Tensor::list_values(hidden, 4); }
+    matmul(router_logits, hidden, gate, false);
+    // if(layer_idx == 30) { cudaDeviceSynchronize(); std::cout << "[L30] router_logits[0..7]="; Tensor::list_values(router_logits, 8); }
+    topk(router_logits, router_indices, router_scores, num_experts_per_tok);
+    
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    // Tensor::list_values(router_indices, num_experts_per_tok);
+    // Tensor::list_values(router_indices, 4);
+    // CUDA_CHECK(cudaGetLastError());
+    // Tensor::list_values(router_scores, 8);
+    // cudaDeviceSynchronize();
+    // CUDA_CHECK(cudaGetLastError());
+    // Gather: sort tokens into expert-contiguous layout
+    Tensor gathered({T * num_experts_per_tok, D}, hidden.dtype(), hidden.device());
+    Tensor token_map({T, num_experts_per_tok}, CUDA_R_32U, hidden.device());
+    Tensor slot_map({T, num_experts_per_tok}, CUDA_R_32U, hidden.device());
+    Tensor expert_offsets({num_experts + 1}, CUDA_R_32U, hidden.device());
+    // moe_gather expects x as [T, D] (2D)
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    Tensor hidden_flat({T, D}, hidden._data, hidden.offset);
+    moe_gather(hidden_flat, router_indices, gathered, token_map, slot_map, expert_offsets, num_experts_per_tok, num_experts);
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    // Tensor::list_values(token_map, num_experts_per_tok);
+    // Tensor::list_values(slot_map, num_experts_per_tok);
+    // Tensor::list_values(expert_offsets, num_experts + 1);
+    // get experts to CPU
+    std::vector<uint32_t> h_offsets(num_experts + 1);
+    cudaMemcpy(h_offsets.data(), expert_offsets.data(),
+               (num_experts + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    const uint64_t elem_bytes = Tensor::element_size(hidden.dtype());
+    for (int e = 0; e < num_experts; e++) {
+        uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
+        if (n_e == 0) continue;
+        // std::cout<<"Preparing "<<std::to_string(layer_idx) + "-" + std::to_string(e)<<std::endl;
+        JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e));
+    }
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    
+    // if(layer_idx == 30){
+    //     std::cout<<"\nLAYER 30\n";
+    //     Tensor::list_values(router_indices, 8);
+    //     Tensor::list_values(expert_offsets);
+    // } 
+    
+    for (int e = 0; e < num_experts; e++) {
+        uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
+        if (n_e == 0) continue;
+        // JoseMurinho->wait(std::to_string(layer_idx) + "-" + std::to_string(e), 0);
+        
+        uint64_t byte_off = (uint64_t)h_offsets[e] * D * elem_bytes;
+        Tensor input_view({1, n_e, D}, gathered._data, byte_off);
+
+
+        Tensor gate_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
+        Tensor up_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
+        matmul(gate_out, input_view, gate_proj[e]);
+
+
+        matmul(up_out, input_view, up_proj[e]);
+        silu(gate_out);
+        elm_wise(gate_out, up_out);
+
+        Tensor out_view({1, n_e, D}, gathered._data, byte_off);
+        matmul(out_view, gate_out, down_proj[e]);
+        if(h_offsets[e] == 0){
+            std::cout<<"\nLAYER"<<layer_idx<<std::endl;
+            Tensor::list_values(out_view, 25);
+        }
+    
+    }
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    // Scatter: weighted sum of expert outputs back to token space
+    Tensor output({T, D}, hidden.dtype(), hidden.device());
+    moe_scatter(output, gathered, router_scores, slot_map, T, num_experts_per_tok);
+    output.shape = {B, S, D};
+    // if (layer_idx == 1) {
+    //     cudaDeviceSynchronize();
+    //     std::cout << "[L1 scores[0..3]]="; Tensor::list_values(router_scores, num_experts_per_tok);
+    //     std::cout << "[L1 moe_output[0..3]]="; Tensor::list_values(output, num_experts_per_tok);
+    // }
+    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaGetLastError());
+    return output;
+}
+
+Tensor Qwen3MoeDecoderLayer::forward(
+    Tensor hidden,
     const Tensor& cos_emb,
     const Tensor& sin_emb,
     std::vector<KVCache>& kvcache,
     FlashAttnEngine& engine,
-    int idx,
     Tensor& Q,
     Tensor& K,
     Tensor& V,
     Tensor& O,
     Tensor& output){
     
-    KVCache& layer_kv_cache = kvcache[idx];
-    int B = hidden.shape[0];
-    int S = hidden.shape[1];
-    int D = hidden.shape[2];
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF),&tmrs.selfattn_cast);
-    
-    // std::cout << "Q "<< Q.dtype() << " " << q_proj.dtype()  << std::endl;
-    // std::cout << "Q "<< Q.shape[0] << " " <<Q.shape[1] << " " <<Q.shape[2] << std::endl;
-    // std::cout << "Q "<< q_proj.shape[0] << " " <<q_proj.shape[1] << " " <<q_proj.shape[2] << std::endl;
-    // std::cout << "Q "<< hidden.shape[0] << " " <<hidden.shape[1] << " " <<hidden.shape[2] << std::endl;
-    // Tensor::list_values(q_proj, 20);
-    TIME_PROFILE(matmul(Q, hidden, q_proj), &tmrs.selfattn_projections);
-    // std::cout << "Q value: ";
-    // Tensor::list_values(Q, 20);
-    TIME_PROFILE(matmul(K, hidden, k_proj), &tmrs.selfattn_projections);
-    TIME_PROFILE(matmul(V, hidden, v_proj), &tmrs.selfattn_projections);
-    
-    TIME_PROFILE(rmsnorm(Q, q_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);
-    TIME_PROFILE(rmsnorm(K, k_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);
-
-    Q.shape = {B, S, num_heads, head_dim};
-    K.shape = {B, S, num_kv_heads, head_dim};
-    V.shape = {B, S, num_kv_heads, head_dim};
-
-    // RoPE expects [B, S, num_heads, head_dim]; apply before transposing
-    TIME_PROFILE(apply_rotary_pos_emb(Q, cos_emb, sin_emb),&tmrs.selfattn_posembs);
-    TIME_PROFILE(apply_rotary_pos_emb(K, cos_emb, sin_emb),&tmrs.selfattn_posembs);
-
-    TIME_PROFILE(Q = transpose(Q, 1, 2), &tmrs.selfattn_transpose);   // [B, num_heads, S, head_dim]
-    TIME_PROFILE(K = transpose(K, 1, 2), &tmrs.selfattn_transpose);    // [B, num_kv_heads, S, head_dim]
-    TIME_PROFILE(V = transpose(V, 1, 2), &tmrs.selfattn_transpose);   // [B, num_kv_heads, S, head_dim]
-    // std::cout << "Q value: ";
-    // Tensor::list_values(Q, 20);
-    // std::cout << "K value before add: ";
-    // Tensor::list_values(K, 20);
-
-    TIME_PROFILE(layer_kv_cache.add_kv(K, V), &tmrs.selfattn_kvcacheadd);
-    O.shape = {B, num_heads, S, head_dim};
-    // Tensor O({B, num_heads, S, head_dim}, Q.dtype(), Q.device());
-    TIME_PROFILE(engine.run(O, Q, layer_kv_cache), &tmrs.selfattn_attn);
-    // std::cout << "O value: ";
-    // Tensor::list_values(O, 20);
-
-    O = transpose(O, 1, 2);   // [B, S, num_heads, head_dim]
-    O.shape = {B, S, num_heads * head_dim};
-
-    // Tensor output = Tensor({B, S, D}, CUDA_R_16BF, hidden.device());
-    TIME_PROFILE(matmul(output, O, o_proj), &tmrs.selfattn_projections);
-    // std::cout << "output value: ";
-    // Tensor::list_values(output, 20);
-    return output;
-}
-
-Tensor Qwen3MLP::forward(const Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down){
-    int B = hidden.shape[0];
-    int S = hidden.shape[1];
-    int D = hidden.shape[2];
-    Tensor x;
-    TIME_PROFILE(x = hidden.cast_to(gate_proj.dtype()),&tmrs.mlp_cast);
-    
-    
-    TIME_PROFILE(matmul(gate, x, gate_proj),&tmrs.mlp_matmul);
-    TIME_PROFILE(matmul(up, x, up_proj),&tmrs.mlp_matmul);
-    TIME_PROFILE(silu(gate),&tmrs.mlp_silu);
-    TIME_PROFILE(elm_wise(gate, up),&tmrs.mlp_elmwise);
-    
-    TIME_PROFILE(matmul(down, gate, down_proj),&tmrs.mlp_matmul);
-    return down;
-}
-
-Tensor Qwen3DecoderLayer::forward(
-    Tensor hidden,
-    const Tensor& cos_emb,
-    const Tensor& sin_emb,
-    std::vector<KVCache>& kvcache,
-    FlashAttnEngine& engine,
-    Tensor& residual,
-    Tensor& Q,
-    Tensor& K,
-    Tensor& V,
-    Tensor& O,
-    Tensor& output,
-    Tensor& gate,
-    Tensor& up,
-    Tensor& down){
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF), &tmrs.casting);
-    // std::cout << idx << std::endl;
-    // std::cout << "Entry "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
-    
+    Tensor residual;
     TIME_PROFILE(hidden.copy_into(residual), &tmrs.makecopy);
     CUDA_CHECK(cudaGetLastError()); 
     rmsnorm(hidden, input_layernorm, rms_norm_eps);
-    // std::cout << "POST LAYERNORM: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
+    
     TIME_PROFILE(hidden = self_attn.forward(hidden, cos_emb, sin_emb, kvcache, engine, idx, Q, K, V, O, output), &tmrs.selfattn);
-    // std::cout << "POST ATTENTION: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
+    
+    CUDA_CHECK(cudaGetLastError()); 
+    TIME_PROFILE(rmsnorm_fused(hidden, residual, post_attention_layernorm, rms_norm_eps), &tmrs.makecopy);
+    // std::cout<<"Entering MLP of Layer "<<idx<<std::endl;
+    TIME_PROFILE(hidden = mlp.forward(hidden), &tmrs.mlp);
+    
     CUDA_CHECK(cudaGetLastError()); 
     TIME_PROFILE(add_inplace(hidden, residual), &tmrs.addinplace);
-    // std::cout << "POST ADD: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
-    CUDA_CHECK(cudaGetLastError()); 
-    TIME_PROFILE(hidden.copy_into(residual), &tmrs.makecopy);
-    CUDA_CHECK(cudaGetLastError()); 
-    rmsnorm(hidden, post_attention_layernorm, rms_norm_eps);
-    
-    TIME_PROFILE(hidden = mlp.forward(hidden, gate, up, down), &tmrs.mlp);
-    
-    // std::cout << "POST MLP: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
-    TIME_PROFILE(hidden = hidden.cast_to(CUDA_R_16BF), &tmrs.casting);
-    // CUDA_CHECK(cudaGetLastError()); 
-    // hidden = hidden.cast_to(residual.dtype);
-    CUDA_CHECK(cudaGetLastError()); 
-    TIME_PROFILE(add_inplace(hidden, residual), &tmrs.addinplace);
-    // std::cout << "POST ADD: "<< hidden.dtype() << std::endl;
-    // Tensor::list_values(hidden, 20);
     CUDA_CHECK(cudaGetLastError()); 
     return hidden;
 }
 
-Tensor Qwen3::forward(
+Tensor Qwen3Moe::forward(
     const Tensor& input_ids,
     Tensor& position_ids,
     std::vector<KVCache>& kvcache,
     FlashAttnEngine& engine){
+
     const int B = position_ids.shape[0];
     const int S = position_ids.shape[1];
     CUDA_CHECK(cudaGetLastError()); 
-    Tensor hidden({B, S, config.hidden_size}, CUDA_R_16BF, input_ids.device());
+    Tensor hidden({B, S, config.hidden_size}, lm_head.dtype(), input_ids.device());
     // kernel is Batch irrelevant :)
     TIME_PROFILE(embedding_forward(hidden, input_ids, embed_tokens), &tmrs.embedding);
-    // Tensor::list_values(hidden, 20);
+    
 
     CUDA_CHECK(cudaGetLastError()); 
-    // cos/sin are now computed on-the-fly inside apply_rotary_pos_emb (fused kernel)
+        // const std::vector<int> out_shape = {B, S, config.head_dim};
+    Tensor cos_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
+    Tensor sin_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
+    TIME_PROFILE(rope_forward(hidden, position_ids, rotary_embedding.inv_freq, cos_emb, sin_emb), &tmrs.rope_forward);
+    CUDA_CHECK(cudaGetLastError()); 
+    // Tensor::list_values(sin_emb, 200);
+    // Tensor::list_values(cos_emb, 200);
     auto tm1 = high_resolution_clock::now();
     Tensor Q = Tensor({B, S, config.num_attention_heads * config.head_dim}, hidden.dtype(), hidden.device());
     Tensor K = Tensor({B, S, config.num_key_value_heads * config.head_dim}, hidden.dtype(), hidden.device());
@@ -248,24 +311,12 @@ Tensor Qwen3::forward(
     Tensor O = Tensor({B, config.num_attention_heads, S,  config.head_dim}, hidden.dtype(), hidden.device());
     Tensor output = Tensor({B, S, config.hidden_size}, hidden.dtype(), hidden.device());
     tmrs.selfattn_inits += duration_cast<microseconds>(high_resolution_clock::now() - tm1).count();
-    
-    Tensor cos_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
-    Tensor sin_emb({B, S, config.head_dim}, CUDA_R_32F, hidden.device());
-    TIME_PROFILE(rope_forward(hidden, position_ids, rotary_embedding.inv_freq, cos_emb, sin_emb), &tmrs.rope_forward);
-    CUDA_CHECK(cudaGetLastError()); 
-    // Tensor::list_values(sin_emb, 200);
-    // Tensor::list_values(cos_emb, 200);
-    
-    tm1 = high_resolution_clock::now();
-    Tensor gate({B, S, config.intermediate_size}, hidden.dtype(), hidden.device());
-    Tensor up({B, S, config.intermediate_size}, hidden.dtype(), hidden.device());
-    Tensor down({B, S, config.hidden_size}, hidden.dtype(), hidden.device());
-    tmrs.mlp_inits += duration_cast<microseconds>(high_resolution_clock::now() - tm1).count();
+
     for (auto& layer : layers){
-                hidden = layer.forward(hidden, cos_emb, sin_emb, kvcache, engine, residual, Q, K, V, O, output, gate, up, down);
-                // Tensor::list_values(hidden, 20);
+        hidden = layer.forward(hidden, cos_emb, sin_emb, kvcache, engine, Q, K, V, O, output);
 
     }
+    // std::cout << "POST LOOP" << std::endl;
     CUDA_CHECK(cudaGetLastError()); 
     TIME_PROFILE(rmsnorm(hidden, norm, config.rms_norm_eps),&tmrs.norm);
     CUDA_CHECK(cudaGetLastError()); 

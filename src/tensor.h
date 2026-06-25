@@ -1,6 +1,7 @@
 #pragma once
 #include "cuda-common.cuh"
 
+#include <cstdlib>
 #include <vector>
 #include <numeric>
 #include <stdexcept>
@@ -16,7 +17,7 @@
     cudaError_t err = (call); \
     if (err != cudaSuccess) { \
         std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ \
-                  << " — " << cudaGetErrorString(err) << "\n"; \
+        << " — " << cudaGetErrorString(err) << "\n"; \
         std::exit(1); \
     } \
 } while(0)
@@ -48,8 +49,9 @@ struct DataView {
             cudaSetDevice(device);
             cudaMalloc(&data, num_elements * element_size(dtype));
         }else if(on_cpu && initialized){
-            data = malloc(num_elements * element_size(dtype));
-            
+            data = std::malloc(num_elements * element_size(dtype));
+            if (!data)
+                throw std::runtime_error("malloc failed for CPU tensor");
         }
     }
 
@@ -61,11 +63,31 @@ struct DataView {
         cudaMalloc(&data, num_elements * element_size(dtype));
     }
 
+    void offloadAsync(cudaStream_t stream){
+        if(!data || !initialized || on_cpu) return;
+        void* tmp = std::malloc(num_elements * element_size(dtype));
+        if (!tmp)
+            throw std::runtime_error("malloc failed for CPU tensor");
+        on_cpu = true;
+        cudaMemcpy(tmp, data, num_elements * element_size(dtype), cudaMemcpyDeviceToHost);
+        cudaFree(data);
+        data = tmp;
+    }
+
+    void onloadAsync(cudaStream_t stream){
+        if(!data || !initialized || !on_cpu) return;
+        void* tmp;
+        cudaMalloc(&tmp, num_elements * element_size(dtype));
+        cudaMemcpy(tmp, data, num_elements * element_size(dtype), cudaMemcpyHostToDevice);
+        // Free the CPU buffer after the copy completes, without blocking the CPU.
+        std::free(data);
+        data = tmp;
+        on_cpu = false;
+    }
     void free(){
         if (!data) return;
-        if (on_cpu) {        
-            ::free(data);
-                
+        if (on_cpu) {
+            std::free(data);
         } else {
             cudaSetDevice(device);
             cudaFreeAsync(data, get_load_offload_stream());
@@ -74,9 +96,15 @@ struct DataView {
         data = nullptr;
     }
     template<typename T>
-    void set_data(std::vector<T>& buffer, size_t n_bytes){
-        cudaSetDevice(device);
-        cudaMemcpy(data, buffer.data(), n_bytes, cudaMemcpyHostToDevice);
+    void set_data(std::vector<T>& buffer, size_t n_bytes, int offset = 0){
+        if(on_cpu){
+            cudaMemcpy(data + offset, buffer.data(), n_bytes, cudaMemcpyHostToHost);
+        }else{
+            cudaSetDevice(device);
+            cudaMemcpy(data + offset, buffer.data(), n_bytes, cudaMemcpyHostToDevice);
+        }
+        
+        
     }
     ~DataView(){
         free();
@@ -84,6 +112,23 @@ struct DataView {
 
     static DataView make_like(DataView& o){
         return DataView(o.dtype, o.num_elements, o.device, o.on_cpu, o.initialized);
+    }
+
+
+    static void list_values(const DataView& v, int elms = -1){
+        if(elms == -1){
+            elms = v.num_elements;
+        }
+        if(v.dtype == CUDA_R_32F){
+            std::vector<float> h(elms);
+            cudaMemcpy(h.data(), v.data, elms * DataView::element_size(v.dtype), cudaMemcpyDeviceToHost);
+
+            for(int i = 0; i < elms; i++){
+
+                std::cout << h[i]<<" ";
+            }
+            std::cout << std::endl;
+        }
     }
 
     static size_t element_size(cudaDataType_t dtype) {
@@ -120,23 +165,26 @@ struct Tensor {
         std::shared_ptr<DataView>  _scale;
         std::vector<int>            shape;
         std::vector<int>            shape_scale;
+        uint64_t                    offset;
         // TODO: IN THE FUTURE I WANT STRIDE ADDED TOO TO SUPPORT DIFFERENT VIEWS OF THE SAME TENSOR
         // TODO: WHAT IF NOT CONTIGIOUS VIEW?
 
         // Default constructor
         Tensor() {}
 
-        Tensor(std::vector<int> shape, DataView dv) : shape(shape){
+        Tensor(std::vector<int> shape, DataView dv, uint64_t offset = 0) : shape(shape), offset(offset){
             _data = std::make_shared<DataView>(dv);
             
         }
 
-        Tensor(std::vector<int> shape, std::shared_ptr<DataView> dv) : shape(shape){
+        Tensor(std::vector<int> shape, std::shared_ptr<DataView> dv, uint64_t offset = 0) : shape(shape), offset(offset){
             _data = dv;
         }
 
-        Tensor(std::vector<int> shape, cudaDataType_t dtype, int device = 0, bool on_cpu = false, bool initialized = true)
-            : shape(shape) {
+
+
+        Tensor(std::vector<int> shape, cudaDataType_t dtype, int device = 0, bool on_cpu = false, bool initialized = true, uint64_t offset = 0)
+            : shape(shape), offset(offset) {
             _data = std::make_shared<DataView>(dtype, num_elements(), device, on_cpu, initialized);
         }
 
@@ -148,6 +196,7 @@ struct Tensor {
                 _scale = o._scale; 
                 shape = o.shape; 
                 shape_scale = o.shape_scale;
+                offset = o.offset;
             }
         }
 
@@ -160,7 +209,7 @@ struct Tensor {
                 _scale = o._scale;
                 shape = std::move(o.shape); 
                 shape_scale = std::move(o.shape_scale);
-                
+                offset = o.offset;
             }
         }
 
@@ -170,6 +219,7 @@ struct Tensor {
                 _scale = o._scale;
                 shape = o.shape;
                 shape_scale = o.shape_scale;
+                offset = o.offset;
             }
             return *this;
         }
@@ -182,6 +232,7 @@ struct Tensor {
                 _scale = o._scale;
                 shape = std::move(o.shape); 
                 shape_scale = std::move(o.shape_scale);
+                offset = o.offset;
             }
             return *this;
         }
@@ -194,7 +245,7 @@ struct Tensor {
 
 
         void* data() const {
-            return _data->data;
+            return static_cast<char*>(_data->data) + offset;
         }
 
         void gpu_initialize(){
@@ -245,36 +296,36 @@ struct Tensor {
             }
             if(t.dtype() == CUDA_R_32F){
                 std::vector<float> h(elms);
-                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
-                
+                cudaMemcpy(h.data(), t.data(), elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
+
                 for(int i = 0; i < elms; i++){
-                    
+
                     std::cout << h[i]<<" ";
                 }
                 std::cout << std::endl;
             }else if(t.dtype() == CUDA_R_16BF){
                 std::vector<__nv_bfloat16> h(elms);
-                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
-                
+                cudaMemcpy(h.data(), t.data(), elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
+
                 for(int i = 0; i < elms; i++){
-                    
+
                     std::cout << (float)h[i]<<" ";
                 }
                 std::cout << std::endl;
 
             }else if(t.dtype() == CUDA_R_16F){
                 std::vector<__half> h(elms);
-                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
-                
+                cudaMemcpy(h.data(), t.data(), elms * Tensor::element_size(t.dtype()),  cudaMemcpyDeviceToHost);
+
                 for(int i = 0; i < elms; i++){
-                    
+
                     std::cout << (float)h[i]<<" ";
                 }
                 std::cout << std::endl;
 
             }else if(t.dtype() == CUDA_R_8F_E4M3){
                 std::vector<uint8_t> h(elms);
-                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
+                cudaMemcpy(h.data(), t.data(), elms * Tensor::element_size(t.dtype()), t.on_cpu() ? cudaMemcpyHostToHost : cudaMemcpyDeviceToHost);
                 __nv_fp8_e4m3 fp8val;
                 for(int i = 0; i < elms; i++){
                     fp8val.__x = h[i];
@@ -283,10 +334,10 @@ struct Tensor {
                 std::cout << std::endl;
             }else if(t.dtype() == CUDA_R_32U){
                 std::vector<uint32_t> h(elms);
-                cudaMemcpy(h.data(), t._data->data, elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
-                
+                cudaMemcpy(h.data(), t.data(), elms * Tensor::element_size(t.dtype()), cudaMemcpyDeviceToHost);
+
                 for(int i = 0; i < elms; i++){
-                    
+
                     std::cout << h[i]<<" ";
                 }
                 std::cout << std::endl;
@@ -295,7 +346,7 @@ struct Tensor {
 
         Tensor make_copy(){
             if(!_data) return Tensor();
-            Tensor t(shape, dtype(), device(), on_cpu(), initialized());
+            Tensor t(shape, dtype(), device(), on_cpu(), initialized(), offset);
             if(!initialized()) return t;
             size_t bytes = (size_t) num_elements() * Tensor::element_size(dtype());
             if (on_cpu()) {
@@ -311,12 +362,13 @@ struct Tensor {
             if (!_data || !initialized()) return;
             size_t bytes = (size_t) num_elements() * Tensor::element_size(dtype());
             if (!dst._data || !dst.initialized() || dst.num_elements() != num_elements() || dst.dtype() != dtype()) {
-                dst = Tensor(shape, dtype(), device(), false, true);
+                dst = Tensor(shape, dtype(), device(), false, true, 0);
             } else {
-                dst.shape = shape; // after some refactoring shape now works as a view :)
+                dst.shape = shape;
+                dst.offset = 0;
             }
             cudaSetDevice(device());
-            CUDA_CHECK(cudaMemcpy(dst._data->data, _data->data, bytes, cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpy(dst._data->data, data(), bytes, cudaMemcpyDeviceToDevice));
         }
 
         void update_scale(std::vector<int> shape, DataView dv){
@@ -326,7 +378,7 @@ struct Tensor {
 
         void update_scale(std::vector<int> shape){
             shape_scale = shape;
-            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), on_cpu(), initialized());
+            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), false, initialized());
         }
         // Returns true if a new allocation was made (caller should zero extra rows if needed).
         bool lazy_update_scale(std::vector<int> new_shape){
@@ -341,7 +393,7 @@ struct Tensor {
         template<typename T>
         void update_scale(std::vector<int> shape, std::vector<T>& buffer, size_t n_bytes){
             shape_scale = shape;
-            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), on_cpu(), initialized());
+            _scale = std::make_shared<DataView>(CUDA_R_32F, num_elements_scale(), device(), false, initialized());
             _scale->set_data<T>(buffer, n_bytes);
 
         }
@@ -360,6 +412,13 @@ struct Tensor {
             return n;
         }
         
+        void offloadAsync(cudaStream_t stream){
+            _data->offloadAsync(stream);
+        }
+
+        void onloadAsync(cudaStream_t stream){
+            _data->onloadAsync(stream);
+        }
 
         static size_t element_size(cudaDataType_t dtype) {
             switch (dtype) {

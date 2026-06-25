@@ -54,29 +54,30 @@ struct SafeTensorReader {
 
   
 
-    Tensor load(const std::string& name, int device) const {
+    Tensor load(const std::string& name, int device, bool on_cpu = false) const {
         auto it = weights.find(name);
         if (it == weights.end())
             throw std::runtime_error("tensor not found in " + path_ + ": " + name);
         const WeightContainer& m = it->second;
 
         size_t nbytes = m.end - m.start;
-        std::vector<char> buf(nbytes);
-        // std::cout << "LINE 62" << std::endl;
+        Tensor t(m.shape, m.dtype, device, on_cpu);
         {
             std::ifstream f(path_, std::ios::binary);
             f.seekg((std::streamoff)(data_base_ + m.start));
-            f.read(buf.data(), (std::streamsize)nbytes);
+            if (on_cpu) {
+                
+                f.read(static_cast<char*>(t.data()), (std::streamsize)nbytes);
+            } else {
+                std::vector<char> buf(nbytes);
+                f.read(buf.data(), (std::streamsize)nbytes);
+                if (!f) throw std::runtime_error("read error in " + path_ + " for " + name);
+                t.set_data(buf, nbytes);  // cudaMemcpyHostToDevice
+            }
             if (!f) throw std::runtime_error("read error in " + path_ + " for " + name);
         }
-        // std::cout << "LINE 69 " << m.dtype << " " << CUDA_R_8F_E4M3 << std::endl;
-
-        Tensor t(m.shape, m.dtype, device);
-        t.set_data<char>(buf, nbytes);
-        if(t.dtype() == CUDA_R_16F){
-            t = t.cast_to(CUDA_R_16BF);
-            // std::cout<< t.dtype() << " "<< CUDA_R_16BF << std::endl;
-        }
+        
+        
         
 #ifdef FP8_AVAILABLE
         if (t.dtype() == CUDA_R_8F_E4M3) {
@@ -97,21 +98,30 @@ struct SafeTensorReader {
                 }
                 // std::cout << "LINE 99" << std::endl;
                 // std::cout << sm.shape[0] << "x" << sm.shape[1] << " " << m.shape[0] << "x" << m.shape[1] << std::endl;
-                // Convert F16 → F32 (model stores scales as F16).
-                size_t n_elems = nbytes / ((sm.dtype == CUDA_R_16F) ? 2 : 4);
+                // Convert F16/BF16 → F32 (model stores scales as F16 or BF16).
+                size_t n_elems = nbytes / ((sm.dtype == CUDA_R_16F || sm.dtype == CUDA_R_16BF) ? 2 : 4);
                 std::vector<char> scale_f32(n_elems * 4);
                 if(sm.dtype == CUDA_R_16F){
                     const __half* src = reinterpret_cast<const __half*>(buf.data());
                     float* dst = reinterpret_cast<float*>(scale_f32.data());
                     for (size_t i = 0; i < n_elems; ++i)
                         dst[i] = __half2float(src[i]);
+                } else if(sm.dtype == CUDA_R_16BF){
+                    const __nv_bfloat16* src = reinterpret_cast<const __nv_bfloat16*>(buf.data());
+                    float* dst = reinterpret_cast<float*>(scale_f32.data());
+                    for (size_t i = 0; i < n_elems; ++i)
+                        dst[i] = __bfloat162float(src[i]);
                 }else{
                     std::copy(buf.begin(), buf.end(), scale_f32.begin());
                 }
-                // MN-major SFB: CUTLASS expects [K/128, N/128] with N fast,
-                // but the model stores [N/128, K/128] (K fast) — transpose on load.
+                
                 t.update_scale<char>(sm.shape, scale_f32, n_elems * 4);
                 
+            }else{
+              
+                std::exit(1);
+                // return;
+       
             }
                
                 
@@ -119,6 +129,73 @@ struct SafeTensorReader {
         }
 #endif
         return t;
+    }
+
+
+    const WeightContainer& peek(const std::string& name) const {
+        auto it = weights.find(name);
+        if (it == weights.end())
+            throw std::runtime_error("tensor not found in " + path_ + ": " + name);
+        return it->second;
+    }
+
+    void load_into(const std::string& name, DataView& dv, int byte_offset) const {
+        auto it = weights.find(name);
+        if (it == weights.end())
+            throw std::runtime_error("tensor not found in " + path_ + ": " + name);
+        size_t nbytes = it->second.end - it->second.start;
+        std::ifstream f(path_, std::ios::binary);
+        f.seekg((std::streamoff)(data_base_ + it->second.start));
+        if (dv.on_cpu) {
+            f.read(static_cast<char*>(dv.data) + byte_offset, (std::streamsize)nbytes);
+            if (!f) throw std::runtime_error("read error in " + path_ + " for " + name);
+        } else {
+            std::vector<char> buf(nbytes);
+            f.read(buf.data(), (std::streamsize)nbytes);
+            if (!f) throw std::runtime_error("read error in " + path_ + " for " + name);
+            dv.set_data<char>(buf, nbytes, byte_offset);
+        }
+    }
+
+    void load_scale(const std::string& name, Tensor& t) const {
+#ifdef FP8_AVAILABLE
+        if (t.dtype() != CUDA_R_8F_E4M3){
+            std::exit(1);
+            return;
+        }
+        std::string scale_name = name + "_scale_inv";
+        auto sit = weights.find(scale_name);
+        if (sit == weights.end()){
+            std::exit(1);
+            return;
+        }
+        const WeightContainer& sm = sit->second;
+        size_t nbytes = sm.end - sm.start;
+        std::vector<char> buf(nbytes);
+        {
+            std::ifstream f(path_, std::ios::binary);
+            f.seekg((std::streamoff)(data_base_ + sm.start));
+            f.read(buf.data(), (std::streamsize)nbytes);
+            if (!f) throw std::runtime_error("read error in " + path_ + " for " + name);
+        }
+        size_t n_elems = nbytes / ((sm.dtype == CUDA_R_16F || sm.dtype == CUDA_R_16BF) ? 2 : 4);
+        std::vector<char> scale_f32(n_elems * 4);
+        if(sm.dtype == CUDA_R_16F){
+                const __half* src = reinterpret_cast<const __half*>(buf.data());
+                float* dst = reinterpret_cast<float*>(scale_f32.data());
+                for (size_t i = 0; i < n_elems; ++i)
+                    dst[i] = __half2float(src[i]);
+        } else if(sm.dtype == CUDA_R_16BF){
+            const __nv_bfloat16* src = reinterpret_cast<const __nv_bfloat16*>(buf.data());
+            float* dst = reinterpret_cast<float*>(scale_f32.data());
+            for (size_t i = 0; i < n_elems; ++i)
+                dst[i] = __bfloat162float(src[i]);
+        }else{
+            std::copy(buf.begin(), buf.end(), scale_f32.begin());
+        }
+        t.update_scale<char>(sm.shape, scale_f32, n_elems * 4);
+
+#endif
     }
 
     static cudaDataType_t sft_to_cuda(const std::string& s){
@@ -156,7 +233,7 @@ struct ModelLoader {
         
     }
 
-    Tensor load(const std::string& name, int device_) {
+    Tensor load(const std::string& name, int device_, bool on_cpu = false) {
         std::string& fl_nm = weight_to_file[name];
         
         auto sf_it = file_to_shard.find(fl_nm);
@@ -168,6 +245,36 @@ struct ModelLoader {
             sf_it = file_to_shard.find(fl_nm);
         }
         // std::cout << "loading " << name << std::endl;
-        return sf_it->second.load(name, device_);
+        return sf_it->second.load(name, device_, on_cpu);
+    }
+
+    const WeightContainer& peek(const std::string& name) {
+        auto& fl_nm = weight_to_file.at(name);
+        auto sf_it = file_to_shard.find(fl_nm);
+        if (sf_it == file_to_shard.end()) {
+            file_to_shard[fl_nm] = SafeTensorReader(fl_nm);
+            sf_it = file_to_shard.find(fl_nm);
+        }
+        return sf_it->second.peek(name);
+    }
+
+    void load_into(const std::string& name, DataView& dv, int byte_offset) {
+        auto& fl_nm = weight_to_file.at(name);
+        auto sf_it = file_to_shard.find(fl_nm);
+        if (sf_it == file_to_shard.end()) {
+            file_to_shard[fl_nm] = SafeTensorReader(fl_nm);
+            sf_it = file_to_shard.find(fl_nm);
+        }
+        sf_it->second.load_into(name, dv, byte_offset);
+    }
+
+    void load_scale(const std::string& name, Tensor& t) {
+        auto& fl_nm = weight_to_file.at(name);
+        auto sf_it = file_to_shard.find(fl_nm);
+        if (sf_it == file_to_shard.end()) {
+            file_to_shard[fl_nm] = SafeTensorReader(fl_nm);
+            sf_it = file_to_shard.find(fl_nm);
+        }
+        sf_it->second.load_scale(name, t);
     }
 };

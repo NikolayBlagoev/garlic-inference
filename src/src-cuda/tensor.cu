@@ -43,13 +43,16 @@ Tensor Tensor::cast_to(cudaDataType_t new_dtype) const {
     if(dtype() == new_dtype) return *this;
     cudaSetDevice(device());
     if(dtype() == CUDA_R_16F && new_dtype == CUDA_R_16BF){
-        int N = num_elements();
-        int threads = 1024;
-        int blocks = (N + threads - 1) / threads;
-        f16_to_bf16<<<blocks, threads>>>(static_cast<__half*>(data()), N);
-        _data->dtype = CUDA_R_16BF;
-    
-        return *this;
+        std::cout<<"ERROR"<<std::endl;
+        std::exit(1);
+        // Tensor out(shape, new_dtype, device());
+        // int N = num_elements();
+        // int threads = 1024;
+        // int blocks = (N + threads - 1) / threads;
+        // // copy first, then convert in place in out's own allocation
+        // cudaMemcpy(out.data(), data(), (size_t)N * sizeof(__half), cudaMemcpyDeviceToDevice);
+        // f16_to_bf16<<<blocks, threads>>>(static_cast<__half*>(out.data()), N);
+        // return out;
     }
     Tensor out(shape, new_dtype, device());
     if (dtype() == CUDA_R_32F && new_dtype == CUDA_R_16BF) {

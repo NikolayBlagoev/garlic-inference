@@ -61,6 +61,7 @@ static __global__ void argmax_last_dim_kernel(const T* __restrict__ x,
                 }
             }
         }
+        __syncthreads();
     }
 
     if (warp_id == 0 && lane_id == 0) {
@@ -86,6 +87,9 @@ std::vector<uint32_t> argmax(const Tensor& x, Tensor& out, int dim) {
     } else if (x.dtype() == CUDA_R_32F) {
         argmax_last_dim_kernel<float><<<nee, num_threads>>>(
             (const float*)x.data(), (uint32_t*)out.data(), row_len);
+    } else if (x.dtype() == CUDA_R_16F) {
+        argmax_last_dim_kernel<__half><<<nee, num_threads>>>(
+            (const __half*)x.data(), (uint32_t*)out.data(), row_len);
     }
 
 
@@ -195,7 +199,7 @@ __global__ void topk_softmax_last_dim_kernel(
             winners[k] = argmax;
         }
 
-        if(k != K -1) __syncthreads();
+        __syncthreads();
     }
 
 
@@ -224,10 +228,11 @@ void topk(const Tensor& x, Tensor& ids, Tensor& weights, int K) {
     nee = nee / row_len;
 
     const int64_t num_threads = std::min<int64_t>(1024, (row_len + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE);
-    const int max_warps = num_threads / WARP_SIZE;
+    // Kernel layout: winners[K] | shared_argmax[32] | shared_maxval[32]
+    // Must use 32 here to match the kernel's `constexpr int max_warps = 32` layout.
     size_t smem = (size_t) K * sizeof(uint32_t)
-            + (size_t) max_warps * sizeof(uint32_t)
-            + (size_t) max_warps * sizeof(float);
+            + 32 * sizeof(uint32_t)
+            + 32 * sizeof(float);
     
     if (x.dtype() == CUDA_R_16BF) {
         topk_softmax_last_dim_kernel<__nv_bfloat16><<<nee, num_threads, smem>>>(
@@ -236,6 +241,10 @@ void topk(const Tensor& x, Tensor& ids, Tensor& weights, int K) {
     } else if (x.dtype() == CUDA_R_32F) {
         topk_softmax_last_dim_kernel<float><<<nee, num_threads, smem>>>(
             (const float*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(), 
+            row_len, K);
+    } else if (x.dtype() == CUDA_R_16F) {
+        topk_softmax_last_dim_kernel<__half><<<nee, num_threads, smem>>>(
+            (const __half*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(), 
             row_len, K);
     }
 }

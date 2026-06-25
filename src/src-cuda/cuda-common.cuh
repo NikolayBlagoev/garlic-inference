@@ -49,6 +49,45 @@ static cudnnHandle_t cudnn_handle() {
     return _cudnn_handle;
 }
 
+template<typename T>
+__device__ inline void write4(T* p, T a, T b, T c, T d) {
+    p[0] = a; p[1] = b; p[2] = c; p[3] = d;
+}
+template<>
+__device__ inline void write4<float>(float* p, float a, float b, float c, float d) {
+    *reinterpret_cast<float4*>(p) = make_float4(a, b, c, d);
+}
+template<>
+__device__ inline void write4<__nv_bfloat16>(__nv_bfloat16* p, __nv_bfloat16 a, __nv_bfloat16 b, __nv_bfloat16 c, __nv_bfloat16 d) {
+    reinterpret_cast<__nv_bfloat162*>(p)[0] = __nv_bfloat162(a,b);
+    reinterpret_cast<__nv_bfloat162*>(p)[1] = __nv_bfloat162(c,d);
+}
+template<>
+__device__ inline void write4<__half>(__half* p, __half a, __half b, __half c, __half d) {
+    reinterpret_cast<__half2*>(p)[0] = __half2(a, b);
+    reinterpret_cast<__half2*>(p)[1] = __half2(c,d);
+}
+template<typename T>
+__device__ inline void write4(T* p, T* a) {
+    p[0] = a[0]; 
+    p[1] = a[1]; 
+    p[2] = a[2]; 
+    p[3] = a[3];
+}
+template<>
+__device__ inline void write4<__nv_bfloat16>(__nv_bfloat16* p, __nv_bfloat16* a) {
+    reinterpret_cast<__nv_bfloat162*>(p)[0] = *reinterpret_cast<__nv_bfloat162*>(a);
+    reinterpret_cast<__nv_bfloat162*>(p)[1] = *reinterpret_cast<__nv_bfloat162*>(a + 2);
+}
+template<>
+__device__ inline void write4<__half>(__half* p, __half* a) {
+    reinterpret_cast<__half2*>(p)[0] = *reinterpret_cast<__half2*>(a);
+    reinterpret_cast<__half2*>(p)[1] = *reinterpret_cast<__half2*>(a + 2);
+}
+
+
+
+
 #ifdef __CUDACC__
 template<int width = WARP_SIZE>
 __device__ __forceinline__ float warp_reduce_sum(float x) {

@@ -70,6 +70,28 @@ __global__ void elm_wise_kernel_bf16_bf16(
 }
 
 
+__global__ void elm_wise_kernel_f16_f16(
+    __half* __restrict__ x,
+    const __half* __restrict__ w,
+    long long stride,
+    long long N) {
+
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i + 3 < N) {
+        __half2  v_0 = *reinterpret_cast<const __half2 *>(x + i);
+        __half2  v2_0 = *reinterpret_cast<const __half2 *>(w + (i%stride));
+        *reinterpret_cast<__half2*>(x + i) =__half2(v_0.x*v2_0.x, v_0.y*v2_0.y);
+        v_0 = *reinterpret_cast<const __half2 *>(x + i + 2);
+        v2_0 = *reinterpret_cast<const __half2 *>(w + ((i+2)%stride));
+        *reinterpret_cast<__half2*>(x + i + 2) = __half2(v_0.x*v2_0.x, v_0.y*v2_0.y);
+
+    } else {
+        for (; i < N; i++)
+            x[i] = w[i % stride] * x[i];
+    }
+}
+
+
 void elm_wise(Tensor& x, const Tensor& w) {
     const long long N = x.num_elements();
     const long long stride = w.num_elements();
@@ -82,6 +104,11 @@ void elm_wise(Tensor& x, const Tensor& w) {
     } else if (x.dtype() == CUDA_R_16BF && w.dtype() == CUDA_R_16BF) {
         elm_wise_kernel_bf16_bf16<<<blocks, threads>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)w.data(),
+            stride, N);
+        
+    } else if (x.dtype() == CUDA_R_16F && w.dtype() == CUDA_R_16F) {
+        elm_wise_kernel_f16_f16<<<blocks, threads>>>(
+            (__half*)x.data(), (const __half*)w.data(),
             stride, N);
         
     }
@@ -154,6 +181,28 @@ __global__ void add_inplace_kernel_bf16_bf16(
     }
 }
 
+__global__ void add_inplace_kernel_f16_f16(
+    __half* __restrict__ x,
+    const __half* __restrict__ w,
+    long long stride,
+    long long N) {
+
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (i + 3 < N) {
+        __half2  v_0 = *reinterpret_cast<const __half2 *>(x + i);
+        __half2  v2_0 = *reinterpret_cast<const __half2 *>(w + (i%stride));
+        *reinterpret_cast<__half2*>(x + i) = __half2(v_0.x+v2_0.x, v_0.y+v2_0.y);
+        v_0 = *reinterpret_cast<const __half2 *>(x + i + 2);
+        v2_0 = *reinterpret_cast<const __half2 *>(w + ((i+2)%stride));
+        *reinterpret_cast<__half2*>(x + i + 2) = __half2(v_0.x+v2_0.x, v_0.y+v2_0.y);
+
+    } else {
+        for (; i < N; i++)
+            x[i] = w[i % stride] + x[i];
+    }
+}
+
+
 //computes x = x + w
 void add_inplace(Tensor& x, Tensor& w) {
 const long long N = x.num_elements();
@@ -168,11 +217,17 @@ const long long N = x.num_elements();
         add_inplace_kernel_bf16_bf16<<<blocks, threads>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)w.data(),
             stride, N);
+    } else if (x.dtype() == CUDA_R_16F && w.dtype() == CUDA_R_16F) {
+        add_inplace_kernel_f16_f16<<<blocks, threads>>>(
+            (__half*)x.data(), (const __half*)w.data(),
+            stride, N);
     }
 }
 
 // torch does column major it seems
 void matmul(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
+    int x_dims = x.ndim();
+    // static_assert(W.shape[1] == x.shape[x_dims - 1]);
 #ifdef FP8_AVAILABLE
     // FP8 weight with 2-D block scales: dequant to BF16 then GEMM.
     if (W.dtype() == CUDA_R_8F_E4M3 && W.ndim_scale() == 2) {
@@ -189,9 +244,10 @@ void matmul(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
     //     return;
     // }
 #endif
-    if(x.dtype() != W.dtype()){
-        x = x.cast_to(W.dtype());
-    }
+    // if(x.dtype() != W.dtype()){
+    //     x = x.cast_to(W.dtype());
+    // }
+    // std::cout<<x.dtype()<<" "<<W.dtype()<<std::endl; 
     int B = x.shape[0];
     int M = x.shape[1];
     int N = x.shape[2]; // in_features
@@ -298,6 +354,58 @@ __global__ void fp8_gemv_groupwise_bf16_kernel(
         y[(long long)m * N + n] = __float2bfloat16_rn(acc);
 }
 
+__global__ void fp8_gemv_groupwise_f16_kernel(
+        __half* __restrict__ y,
+        const __nv_fp8_e4m3* __restrict__ W,
+        const float* __restrict__ W_scale,
+        const __half* __restrict__ x,
+        int N, int K, int M, int scale_N, int scale_K)
+{
+    const int tx = threadIdx.x & 31;           // lane: 0..31
+    const int ty = threadIdx.y;           // row slot: 0..kGemvBN-1
+    const int n  = blockIdx.x * kGemvBN + ty;
+    const int m  = blockIdx.y;
+
+    if (n >= N || m >= M) return;
+
+    const __nv_fp8_e4m3* w_row = W + (long long)n * K;
+    const __half* x_row = x + (long long)m * K;
+
+    int s_col = n * scale_N / N;
+    float factor = K / scale_K;
+
+    float acc = 0.0f;
+
+    for (int kg = 0; kg < scale_K; kg++) {
+        float scale = __ldg(W_scale + s_col * scale_K + kg);
+        const int k = kg * kGemvSK + tx * 4;
+        float partial = 0.0f;
+        if (k + 3 < K) {
+            __nv_fp8x4_e4m3 w4 = *reinterpret_cast<const __nv_fp8x4_e4m3*>(w_row + k);
+            
+            __half2 x01 = *reinterpret_cast<const __half2*>(x_row + k);
+            __half2 x23 = *reinterpret_cast<const __half2*>(x_row + k + 2);
+
+            float4 wf = float4(w4);
+            float2 xf01 = __half22float2(x01);
+            float2 xf23 = __half22float2(x23);
+
+            partial = fmaf(wf.x, xf01.x, partial);
+            partial = fmaf(wf.y, xf01.y, partial);
+            partial = fmaf(wf.z, xf23.x, partial);
+            partial = fmaf(wf.w, xf23.y, partial);
+        } else {
+            for (int kk = k; kk < K && kk < k + 4; kk++)
+                partial = fmaf(float(w_row[kk]), __half2float(x_row[kk]), partial);
+        }
+        acc = fmaf(partial,scale,acc);
+    }
+    acc = warp_reduce_sum<32>(acc);
+    
+    if (tx == 0)
+        y[(long long)m * N + n] = __float2half_rn(acc);
+}
+
 void fp8_gemv_groupwise_bf16(Tensor& y, const Tensor& W, const Tensor& x) {
     int K = W.shape[1];
     int N = W.shape[0];
@@ -307,12 +415,22 @@ void fp8_gemv_groupwise_bf16(Tensor& y, const Tensor& W, const Tensor& x) {
     //     N, K, W.shape_scale[0], W.shape_scale[1]);
     dim3 block(32, kGemvBN);
     dim3 grid((N + kGemvBN - 1) / kGemvBN, M);
-
-    fp8_gemv_groupwise_bf16_kernel<<<grid, block>>>(
-        (__nv_bfloat16*)y.data(),
-        (const __nv_fp8_e4m3*)W.data(), W.scale(),
-        (const __nv_bfloat16*)x.data(),
-        N, K, M, W.shape_scale[0], W.shape_scale[1]);
+    if(y.dtype() == CUDA_R_16BF){
+        fp8_gemv_groupwise_bf16_kernel<<<grid, block>>>(
+            (__nv_bfloat16*)y.data(),
+            (const __nv_fp8_e4m3*)W.data(), W.scale(),
+            (const __nv_bfloat16*)x.data(),
+            N, K, M, W.shape_scale[0], W.shape_scale[1]);
+    }else if(y.dtype() == CUDA_R_16F){
+        fp8_gemv_groupwise_f16_kernel<<<grid, block>>>(
+            (__half*)y.data(),
+            (const __nv_fp8_e4m3*)W.data(), W.scale(),
+            (const __half*)x.data(),
+            N, K, M, W.shape_scale[0], W.shape_scale[1]);
+    } else {
+        std::cerr << "[fp8_gemv] unsupported output dtype " << (int)y.dtype() << " — no kernel launched!\n";
+        std::exit(1);
+    }
 }
 
 void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
@@ -321,69 +439,14 @@ void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W, bool reuse) {
     int K = x.shape[2];   // in_features
     int N = W.shape[0];   // out_features
     int M = B * S;
-    if(M > 0){
-        return fp8_gemv_groupwise_bf16(y,W,x);
-    }
+    // if(M > 0){
+    //     return fp8_gemv_groupwise_bf16(y,W,x);
+    // }
 
     matmul_fp8_blockscale_dequant(y,x,W);
 
 
 }
-
-// both x and W need to be float8 (or we lose the float8 cores optimizations...)
-// Also, scale needs to be a single scalar, for tensor scales we need cutlass
-// void matmul_float8(Tensor& y, Tensor& x, const Tensor& W) {
-//     int B = x.shape[0];
-//     int M = x.shape[1];
-//     int N = x.shape[2]; 
-//     int K = W.shape[0]; 
-
-//     const float alpha = 1.0f;
-//     const float beta  = 0.0f;
-
-//     cublasLtMatmulDesc_t op;
-//     cublasLtMatmulDescCreate(&op, CUBLAS_COMPUTE_32F, CUDA_R_32F);
-
-//     // transpose W
-//     cublasOperation_t transpose_op = CUBLAS_OP_T;
-//     cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSA, &transpose_op, sizeof(transpose_op));
-
-//     // Scale pointers for FP8.
-//     if(W.scale()) cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &(W.scale()), sizeof(float*));
-    
-//     if(x.scale()) cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &(x.scale()), sizeof(float*));
-
-//     cublasLtMatrixLayout_t lw, lx, ly;
-//     cublasLtMatrixLayoutCreate(&lw, CUDA_R_8F_E4M3, N, K, N);
-//     cublasLtMatrixLayoutCreate(&lx, x.dtype(), N, M, N);
-//     cublasLtMatrixLayoutCreate(&ly, y.dtype(), K, M, K);
-
-//     // Batch attributes.
-//     long long stride_W = 0; // W shared across batch
-//     long long stride_x = (long long) M * N;
-//     long long stride_y = (long long) M * K;
-//     cublasLtMatrixLayoutSetAttribute(lw, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &B, sizeof(int));
-//     cublasLtMatrixLayoutSetAttribute(lw, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &stride_W, sizeof(long long));
-//     cublasLtMatrixLayoutSetAttribute(lx, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &B, sizeof(int));
-//     cublasLtMatrixLayoutSetAttribute(lx, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &stride_x, sizeof(long long));
-//     cublasLtMatrixLayoutSetAttribute(ly, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &B, sizeof(int));
-//     cublasLtMatrixLayoutSetAttribute(ly, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &stride_y, sizeof(long long));
-
-//     cublasLtMatmul((cublasLtHandle_t)cublas_handle(), op,
-//                     &alpha,
-//                     W.data(), lw,
-//                     x.data(), lx,
-//                     &beta,
-//                     y.data(), ly,
-//                     y.data(), ly,
-//                     nullptr, nullptr, 0, 0);
-    
-//     // prevent memory leaks lol... 
-//     cublasLtMatrixLayoutDestroy(lw);
-//     cublasLtMatrixLayoutDestroy(lx);
-//     cublasLtMatrixLayoutDestroy(ly);
-// }
-
 
 
 #endif

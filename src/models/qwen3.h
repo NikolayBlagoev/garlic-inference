@@ -26,7 +26,7 @@ struct Qwen3Config {
 struct Qwen3MLP {
     int intermediate_size;
     Tensor gate_proj, up_proj, down_proj;
-    Tensor forward(const Tensor& hidden,
+    Tensor forward(Tensor& hidden,
                 Tensor& gate,
                 Tensor& up,
                 Tensor& down);
@@ -55,7 +55,7 @@ struct Qwen3DecoderLayer {
     Qwen3MLP mlp;
     
 
-    Tensor forward(Tensor hidden,
+    Tensor forward(Tensor& hidden,
                 const Tensor& cos_emb, const Tensor& sin_emb,
                 std::vector<KVCache>& kvcache, FlashAttnEngine& engine,
                 Tensor& residual,

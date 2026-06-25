@@ -14,17 +14,23 @@ FlashAttnEngine::FlashAttnEngine(int batch_size, int num_heads, int num_kv_heads
 }
 
 
-PagedAttnGraph& FlashAttnEngine::get_graph(int seq_q) {
+PagedAttnGraph& FlashAttnEngine::get_graph(int seq_q, cudaDataType_t dtype) {
     if (glob_graph.has_value() && glob_graph->seq_q_param == seq_q) return *glob_graph;
 
     glob_graph.emplace();
     glob_graph->graph = std::make_shared<CUDNN::graph::Graph>();
     glob_graph->seq_q_param = seq_q;
     CUDNN::graph::Graph& g = *glob_graph->graph;
-
-    g.set_io_data_type(CUDNN::DataType_t::BFLOAT16)
+    if(dtype == CUDA_R_16F){
+        g.set_io_data_type(CUDNN::DataType_t::HALF)
         .set_intermediate_data_type(CUDNN::DataType_t::FLOAT)
         .set_compute_data_type(CUDNN::DataType_t::FLOAT);
+    } else {
+        g.set_io_data_type(CUDNN::DataType_t::BFLOAT16)
+        .set_intermediate_data_type(CUDNN::DataType_t::FLOAT)
+        .set_compute_data_type(CUDNN::DataType_t::FLOAT);
+    }
+    
 
     glob_graph->q = g.tensor(CUDNN::graph::Tensor_attributes()
         .set_name("q")
@@ -80,10 +86,18 @@ PagedAttnGraph& FlashAttnEngine::get_graph(int seq_q) {
     auto [o_t, softmax_stats] = g.sdpa(glob_graph->q, glob_graph->k, glob_graph->v, sdpa_attrs);
     (void)softmax_stats;
     glob_graph->o = o_t;
-    glob_graph->o->set_output(true)
+    if(dtype == CUDA_R_16F){
+        glob_graph->o->set_output(true)
+        .set_data_type(CUDNN::DataType_t::HALF)
+        .set_dim({batch_size, num_heads, seq_q, head_dim})
+        .set_stride({num_heads*seq_q*head_dim, seq_q*head_dim, head_dim, 1});
+    } else {
+        glob_graph->o->set_output(true)
         .set_data_type(CUDNN::DataType_t::BFLOAT16)
         .set_dim({batch_size, num_heads, seq_q, head_dim})
         .set_stride({num_heads*seq_q*head_dim, seq_q*head_dim, head_dim, 1});
+    }
+    
 
     CUDNN_FE_CHECK(g.validate());
     CUDNN_FE_CHECK(g.build_operation_graph(cudnn_handle()));
@@ -100,7 +114,7 @@ PagedAttnGraph& FlashAttnEngine::get_graph(int seq_q) {
 
 void FlashAttnEngine::run(Tensor& o, const Tensor& q, const KVCache& cache) {
     int seq_q = q.shape[2];
-    PagedAttnGraph& pg = get_graph(seq_q);
+    PagedAttnGraph& pg = get_graph(seq_q, q.dtype());
 
     if (cached_seq_q != seq_q) {
         fill_int_kernel<<<(batch_size + 255) / 256, 256>>>(

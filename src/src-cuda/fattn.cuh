@@ -42,5 +42,5 @@ struct FlashAttnEngine {
     FlashAttnEngine(const FlashAttnEngine&) = delete;
 
     void run(Tensor& o, const Tensor& q, const KVCache& cache);
-    PagedAttnGraph& get_graph(int seq_q);
+    PagedAttnGraph& get_graph(int seq_q, cudaDataType_t dtype);
 };

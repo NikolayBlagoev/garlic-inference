@@ -49,6 +49,7 @@ struct KVCache{
                 k_pages = Tensor({max_pages, num_heads, PAGE_SIZE, head_dim}, dtype, device);
                 v_pages = Tensor({max_pages, num_heads, PAGE_SIZE, head_dim}, dtype, device);
                 cudaMallocHost(&host_page_table, (size_t) batch_size * max_pages_per_seq * sizeof(int));
+                memset(host_page_table, 0xFF, (size_t) batch_size * max_pages_per_seq * sizeof(int));
                 cudaMalloc(&page_table, (size_t) batch_size * max_pages_per_seq * sizeof(int));
                 cudaMalloc(&qkv_lens, (size_t) batch_size * sizeof(int));
                 cudaMemset(page_table, 0xFF, (size_t) batch_size * max_pages_per_seq * sizeof(int));

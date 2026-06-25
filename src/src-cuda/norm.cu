@@ -131,8 +131,12 @@ void rmsnorm(Tensor& x, const Tensor& weight, float eps, int dim_size) {
         rmsnorm_kernel<__half, __half><<<stride, block, smem_sz>>>(
             (__half*)x.data(), (const __half*)weight.data(),
             dim_size, eps, nullptr, nullptr);
+    } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16BF) {
+        rmsnorm_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz>>>(
+            (__half*)x.data(), (const __nv_bfloat16*)weight.data(),
+            dim_size, eps, nullptr, nullptr);
     }
-    
+
 }
 
 
@@ -171,6 +175,10 @@ void rmsnorm_fused(Tensor& x, Tensor& residual, const Tensor& weight, float eps,
         rmsnorm_fused_kernel<__half, __half><<<stride, block, smem_sz>>>(
             (__half*)x.data(), (const __half*)weight.data(), (__half*)residual.data(),
             dim_size, eps, nullptr, nullptr);
+    } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16BF) {
+        rmsnorm_fused_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz>>>(
+            (__half*)x.data(), (const __nv_bfloat16*)weight.data(), (__half*)residual.data(),
+            dim_size, eps, nullptr, nullptr);
     }
-    
+
 }

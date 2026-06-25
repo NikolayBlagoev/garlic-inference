@@ -84,10 +84,10 @@ int main() {
     std::cout << std::endl;
     FlashAttnEngine engine(batch_size, config.num_attention_heads,
                             config.num_key_value_heads,
-                            config.head_dim, max_pages, max_pages_per_seq);
+                            config.head_dim, max_pages, max_pages_per_seq, model.lm_head.dtype());
     auto tm1 = high_resolution_clock::now();
     int seq_len = x.shape[1];
-    engine.get_graph(seq_len);
+    engine.get_graph(seq_len, model.lm_head.dtype());
     {
         auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         for(int j = 0; j < 601; j++){
@@ -115,7 +115,7 @@ int main() {
             std::vector<uint32_t> tmp_data = {(uint32_t)(encode.size() + j)};
             pos_ids.set_data<uint32_t>(tmp_data, 4);
             if(j == 0){
-                engine.get_graph(1);
+                engine.get_graph(1, model.lm_head.dtype());
                 tm1 = high_resolution_clock::now();
             } 
             delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);

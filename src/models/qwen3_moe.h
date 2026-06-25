@@ -32,9 +32,14 @@ struct Qwen3MoeConfig {
 };
 
 struct Qwen3MoeSparseMoeBlock {
+
+    int num_experts;
+    int num_experts_per_tok;
     int moe_intermediate_size;
+    int layer_idx;
+    Tensor gate;
     std::vector<Tensor> gate_proj, up_proj, down_proj;
-    Tensor forward(const Tensor& hidden);
+    Tensor forward(Tensor& hidden);
 };
 
 struct Qwen3MoeDecoderLayer {
@@ -47,8 +52,15 @@ struct Qwen3MoeDecoderLayer {
     
 
     Tensor forward(Tensor hidden,
-                const Tensor& position_ids, const Tensor& inv_freq,
-                std::vector<KVCache>& kvcache, FlashAttnEngine& engine);
+    const Tensor& cos_emb,
+    const Tensor& sin_emb,
+    std::vector<KVCache>& kvcache,
+    FlashAttnEngine& engine,
+    Tensor& Q,
+    Tensor& K,
+    Tensor& V,
+    Tensor& O,
+    Tensor& output);
 };
 
 

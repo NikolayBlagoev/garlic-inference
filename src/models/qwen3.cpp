@@ -78,9 +78,27 @@ Qwen3 Qwen3::from_pretrained(const std::string& hf_dir, int device) {
         layer.self_attn.q_norm = wl.load(lp + "self_attn.q_norm.weight", device);
         layer.self_attn.k_norm = wl.load(lp + "self_attn.k_norm.weight", device);
         
-        layer.mlp.gate_proj = wl.load(lp + "mlp.gate_proj.weight", device);
-        layer.mlp.up_proj = wl.load(lp + "mlp.up_proj.weight", device);
-        layer.mlp.down_proj = wl.load(lp + "mlp.down_proj.weight", device);
+        const WeightContainer& g_meta = wl.peek(lp + "mlp.gate_proj.weight");
+        const WeightContainer& u_meta = wl.peek(lp + "mlp.up_proj.weight");
+        const WeightContainer& d_meta = wl.peek(lp + "mlp.down_proj.weight");
+
+        long long g_elems = 1; for (int d : g_meta.shape) g_elems *= d;
+        long long u_elems = 1; for (int d : u_meta.shape) u_elems *= d;
+        long long d_elems = 1; for (int d : d_meta.shape) d_elems *= d;
+        long long total   = g_elems + u_elems + d_elems;
+        size_t elem_sz = Tensor::element_size(g_meta.dtype);
+        auto dv = std::make_shared<DataView>(g_meta.dtype, total, device, false);
+        wl.load_into(lp + "mlp.gate_proj.weight", *dv, 0);
+        wl.load_into(lp + "mlp.up_proj.weight", *dv, (int)(g_elems * elem_sz));
+        wl.load_into(lp + "mlp.down_proj.weight", *dv, (int)((g_elems + u_elems) * elem_sz));
+
+        layer.mlp.gate_proj = Tensor(g_meta.shape, dv, 0);
+        layer.mlp.up_proj = Tensor(u_meta.shape, dv, (uint64_t)(g_elems * elem_sz));
+        layer.mlp.down_proj = Tensor(d_meta.shape, dv, (uint64_t)((g_elems + u_elems) * elem_sz));
+        
+        wl.load_scale(lp + "mlp.gate_proj.weight", layer.mlp.gate_proj);
+        wl.load_scale(lp + "mlp.up_proj.weight",   layer.mlp.up_proj);
+        wl.load_scale(lp + "mlp.down_proj.weight",  layer.mlp.down_proj);
 
         model.layers.push_back(std::move(layer));
     }
@@ -160,13 +178,11 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
     return output;
 }
 
-Tensor Qwen3MLP::forward(const Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down){
-    Tensor x;
-    TIME_PROFILE(x = hidden.cast_to(CUDA_R_16BF),&tmrs.mlp_cast);
+Tensor Qwen3MLP::forward(Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down){
     
-    
-    TIME_PROFILE(matmul(gate, x, gate_proj),&tmrs.mlp_matmul);
-    TIME_PROFILE(matmul(up, x, up_proj),&tmrs.mlp_matmul);
+    if(hidden.dtype() == CUDA_R_16BF) std::cout<<"ERORR\n";
+    TIME_PROFILE(matmul(gate, hidden, gate_proj),&tmrs.mlp_matmul);
+    TIME_PROFILE(matmul(up, hidden, up_proj),&tmrs.mlp_matmul);
     TIME_PROFILE(silu(gate),&tmrs.mlp_silu);
     TIME_PROFILE(elm_wise(gate, up),&tmrs.mlp_elmwise);
     
@@ -175,7 +191,7 @@ Tensor Qwen3MLP::forward(const Tensor& hidden, Tensor& gate, Tensor& up, Tensor&
 }
 
 Tensor Qwen3DecoderLayer::forward(
-    Tensor hidden,
+    Tensor& hidden,
     const Tensor& cos_emb,
     const Tensor& sin_emb,
     std::vector<KVCache>& kvcache,
