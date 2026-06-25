@@ -82,19 +82,19 @@ std::vector<uint32_t> argmax(const Tensor& x, Tensor& out, int dim) {
     const int64_t num_threads = std::min<int64_t>(1024, (row_len + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE);
 
     if (x.dtype() == CUDA_R_16BF) {
-        argmax_last_dim_kernel<__nv_bfloat16><<<nee, num_threads>>>(
+        argmax_last_dim_kernel<__nv_bfloat16><<<nee, num_threads, 0, get_compute_stream()>>>(
             (const __nv_bfloat16*)x.data(), (uint32_t*)out.data(), row_len);
     } else if (x.dtype() == CUDA_R_32F) {
-        argmax_last_dim_kernel<float><<<nee, num_threads>>>(
+        argmax_last_dim_kernel<float><<<nee, num_threads, 0, get_compute_stream()>>>(
             (const float*)x.data(), (uint32_t*)out.data(), row_len);
     } else if (x.dtype() == CUDA_R_16F) {
-        argmax_last_dim_kernel<__half><<<nee, num_threads>>>(
+        argmax_last_dim_kernel<__half><<<nee, num_threads, 0, get_compute_stream()>>>(
             (const __half*)x.data(), (uint32_t*)out.data(), row_len);
     }
 
-
     std::vector<uint32_t> result(nee);
-    cudaMemcpy(result.data(), out.data(), (size_t)nee * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(result.data(), out.data(), (size_t)nee * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_compute_stream());
+    cudaStreamSynchronize(get_compute_stream());
     
 
     return result;
@@ -222,10 +222,11 @@ __global__ void topk_softmax_last_dim_kernel(
 }
 
 
-void topk(const Tensor& x, Tensor& ids, Tensor& weights, int K) {
+void topk(const Tensor& x, Tensor& ids, Tensor& weights, int K, cudaStream_t compute_stream) {
     int nee = x.num_elements();
     int row_len = x.shape[x.ndim() - 1];
     nee = nee / row_len;
+    if(compute_stream == nullptr) compute_stream = get_compute_stream();
 
     const int64_t num_threads = std::min<int64_t>(1024, (row_len + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE);
     // Kernel layout: winners[K] | shared_argmax[32] | shared_maxval[32]
@@ -235,16 +236,16 @@ void topk(const Tensor& x, Tensor& ids, Tensor& weights, int K) {
             + 32 * sizeof(float);
     
     if (x.dtype() == CUDA_R_16BF) {
-        topk_softmax_last_dim_kernel<__nv_bfloat16><<<nee, num_threads, smem>>>(
-            (const __nv_bfloat16*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(), 
+        topk_softmax_last_dim_kernel<__nv_bfloat16><<<nee, num_threads, smem, compute_stream>>>(
+            (const __nv_bfloat16*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(),
             row_len, K);
     } else if (x.dtype() == CUDA_R_32F) {
-        topk_softmax_last_dim_kernel<float><<<nee, num_threads, smem>>>(
-            (const float*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(), 
+        topk_softmax_last_dim_kernel<float><<<nee, num_threads, smem, compute_stream>>>(
+            (const float*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(),
             row_len, K);
     } else if (x.dtype() == CUDA_R_16F) {
-        topk_softmax_last_dim_kernel<__half><<<nee, num_threads, smem>>>(
-            (const __half*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(), 
+        topk_softmax_last_dim_kernel<__half><<<nee, num_threads, smem, compute_stream>>>(
+            (const __half*)x.data(), (uint32_t*) ids.data(), (float*) weights.data(),
             row_len, K);
     }
 }

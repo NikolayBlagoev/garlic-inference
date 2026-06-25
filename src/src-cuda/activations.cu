@@ -55,17 +55,17 @@ void silu(Tensor& x) {
         const long long N = x.num_elements();
         const int threads = 256;
         const int blocks = (N / 4 + threads - 1) / threads;
-        silu_kernel<float><<<blocks, threads>>>((float*)x.data(),  N);
+        silu_kernel<float><<<blocks, threads, 0, get_compute_stream()>>>((float*)x.data(),  N);
     } else if (x.dtype() == CUDA_R_16BF) {
         const long long N = x.num_elements();
         const int threads = 256;
         const int blocks = (N / 4 + threads - 1) / threads;
-        silu_kernel<__nv_bfloat16><<<blocks, threads>>>((__nv_bfloat16*)x.data(),  N);
+        silu_kernel<__nv_bfloat16><<<blocks, threads, 0, get_compute_stream()>>>((__nv_bfloat16*)x.data(),  N);
     } else if (x.dtype() == CUDA_R_16F) {
         const long long N = x.num_elements();
         const int threads = 256;
         const int blocks = (N / 4 + threads - 1) / threads;
-        silu_kernel<__half><<<blocks, threads>>>((__half*)x.data(),  N);
+        silu_kernel<__half><<<blocks, threads, 0, get_compute_stream()>>>((__half*)x.data(),  N);
     }
 
 }

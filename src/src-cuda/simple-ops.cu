@@ -61,7 +61,7 @@ Tensor transpose(const Tensor& inp, int d0, int d1) {
     int blocks  = (N + threads - 1) / threads;
     int esz     = Tensor::element_size(inp.dtype());
 
-    transpose_kernel<<<blocks, threads>>>(
+    transpose_kernel<<<blocks, threads, 0, get_compute_stream()>>>(
         static_cast<const char*>(inp.data()),
         static_cast<char*>(out.data()),
         esz, N,
@@ -87,9 +87,9 @@ void fill_inplace(Tensor& t, float val){
     int threads = 256, blocks = (N + threads - 1) / threads;
 
     if(t.dtype() == CUDA_R_32F){
-        fill_kernel_f32<<<blocks, threads>>>((float*)t.data(), val, N);
+        fill_kernel_f32<<<blocks, threads, 0, get_compute_stream()>>>((float*)t.data(), val, N);
     }else if(t.dtype() == CUDA_R_16BF){
-        fill_kernel_bf16<<<blocks, threads>>>((__nv_bfloat16*)t.data(), __nv_bfloat16(val), N);
+        fill_kernel_bf16<<<blocks, threads, 0, get_compute_stream()>>>((__nv_bfloat16*)t.data(), __nv_bfloat16(val), N);
     }
 }
 // Processes 4 floats per thread: one float4 load, one uint64 store.
@@ -118,7 +118,7 @@ void arrange(Tensor& t, int a, int step){
     if (N == 0) return;
     int threads = 256;
     int blocks = (N + 4 * threads - 1) / (4 * threads);
-    arange_kernel<<<blocks, threads>>>(static_cast<uint32_t*>(t.data()), a, step, repeat, N);
+    arange_kernel<<<blocks, threads, 0, get_compute_stream()>>>(static_cast<uint32_t*>(t.data()), a, step, repeat, N);
 }
 
 __global__ void pow_kernel_f32(
@@ -141,7 +141,7 @@ void pow(Tensor& inp, float val){
         int N = inp.num_elements();
         int threads = 256;
         int blocks = (N / 4 + threads - 1) / threads;
-        pow_kernel_f32<<<blocks, threads>>>(static_cast<float*>(inp.data()), val, N);
+        pow_kernel_f32<<<blocks, threads, 0, get_compute_stream()>>>(static_cast<float*>(inp.data()), val, N);
     }
 }
 
@@ -227,16 +227,16 @@ void reduce(Tensor& inp, Tensor& outp, int dim, bool norm) {
     
 
     if (inp.dtype() == CUDA_R_32F) {
-        reduce_kernel<float><<<dim_prod, block, smem_sz>>>(
+        reduce_kernel<float><<<dim_prod, block, smem_sz, get_compute_stream()>>>(
             (const float*) (inp.data()), (float*) (outp.data()), dim_size, norm);
     } else if (inp.dtype() == CUDA_R_16BF) {
-        reduce_kernel<__nv_bfloat16><<<dim_prod, block, smem_sz>>>(
+        reduce_kernel<__nv_bfloat16><<<dim_prod, block, smem_sz, get_compute_stream()>>>(
             (const __nv_bfloat16*) (inp.data()), (__nv_bfloat16*) (outp.data()), dim_size, norm);
     }
 #ifdef FP8_AVAILABLE
     // might need to do it differently here... float8 maxes out at 448.0f so it can give errors...
     else if (inp.dtype() == CUDA_R_8F_E4M3) {
-        reduce_kernel<__nv_fp8_e4m3><<<dim_prod, block, smem_sz>>>(
+        reduce_kernel<__nv_fp8_e4m3><<<dim_prod, block, smem_sz, get_compute_stream()>>>(
             (const __nv_fp8_e4m3*) (inp.data()), (__nv_fp8_e4m3*) (outp.data()), dim_size, norm);
     }
 #endif
@@ -245,7 +245,7 @@ void reduce(Tensor& inp, Tensor& outp, int dim, bool norm) {
 
 
 void max_t(const Tensor& inp, float* outp) {
-    cudaMemset(outp, 0, sizeof(float));
+    cudaMemsetAsync(outp, 0, sizeof(float), get_compute_stream());
 
     const int N       = inp.num_elements();
     const int threads = 256;
@@ -253,11 +253,11 @@ void max_t(const Tensor& inp, float* outp) {
     const int smem_sz = (threads / 32) * sizeof(float);
 
     if (inp.dtype() == CUDA_R_32F)
-        max_kernel<float><<<blocks, threads, smem_sz>>>((const float*)(inp.data()), outp, N);
+        max_kernel<float><<<blocks, threads, smem_sz, get_compute_stream()>>>((const float*)(inp.data()), outp, N);
     else if (inp.dtype() == CUDA_R_16BF)
-        max_kernel<__nv_bfloat16><<<blocks, threads, smem_sz>>>((const __nv_bfloat16*)(inp.data()), outp, N);
+        max_kernel<__nv_bfloat16><<<blocks, threads, smem_sz, get_compute_stream()>>>((const __nv_bfloat16*)(inp.data()), outp, N);
 #ifdef FP8_AVAILABLE
     else if (inp.dtype() == CUDA_R_8F_E4M3)
-        max_kernel<__nv_fp8_e4m3><<<blocks, threads, smem_sz>>>((const __nv_fp8_e4m3*)(inp.data()), outp, N);
+        max_kernel<__nv_fp8_e4m3><<<blocks, threads, smem_sz, get_compute_stream()>>>((const __nv_fp8_e4m3*)(inp.data()), outp, N);
 #endif
 }

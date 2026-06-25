@@ -19,7 +19,7 @@ void initialize_rope(float base, Tensor& t) {
     int N = t.num_elements();
     int threads = 256;
     int blocks = (N / 4 + threads - 1) / threads;
-    _rope_init<<<blocks, threads>>>(static_cast<float*>(t._data->data), base, N);
+    _rope_init<<<blocks, threads, 0, get_compute_stream()>>>(static_cast<float*>(t._data->data), base, N);
 }
 
 
@@ -95,7 +95,7 @@ void rope_forward(
     int threads = 256;
     int warps = threads / 32;
     int blocks = (position_ids.num_elements() + warps - 1) / warps;
-    rope_emb_kernel<<<blocks, threads>>>(
+    rope_emb_kernel<<<blocks, threads, 0, get_compute_stream()>>>(
                     static_cast<float*>(cos_emb.data()),
                     static_cast<float*>(sin_emb.data()),
                     static_cast<const uint32_t*>(position_ids.data()), 
@@ -140,13 +140,13 @@ void apply_rotary_pos_emb(Tensor& x, const Tensor& cos, const Tensor& sin){
     const float* cos_ptr = (const float*) cos.data();
     const float* sin_ptr = (const float*) sin.data();
     if (x.dtype() == CUDA_R_32F){
-        apply_rotary_pos_emb_kernel<float><<<blocks,threads>>>(
+        apply_rotary_pos_emb_kernel<float><<<blocks,threads,0,get_compute_stream()>>>(
             (float*) x.data(), cos_ptr, sin_ptr, B, S, num_heads, head_dim);
     } else if (x.dtype() == CUDA_R_16BF){
-        apply_rotary_pos_emb_kernel<__nv_bfloat16><<<blocks,threads>>>(
+        apply_rotary_pos_emb_kernel<__nv_bfloat16><<<blocks,threads,0,get_compute_stream()>>>(
             (__nv_bfloat16*) x.data(), cos_ptr, sin_ptr, B, S, num_heads, head_dim);
     } else if (x.dtype() == CUDA_R_16F){
-        apply_rotary_pos_emb_kernel<__half><<<blocks,threads>>>(
+        apply_rotary_pos_emb_kernel<__half><<<blocks,threads,0,get_compute_stream()>>>(
             (__half*) x.data(), cos_ptr, sin_ptr, B, S, num_heads, head_dim);
     }
 }

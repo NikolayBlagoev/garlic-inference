@@ -127,25 +127,25 @@ void embedding_forward(Tensor& input_embeds, const Tensor& input_ids, const Tens
 
     if (input_embeds.dtype() == CUDA_R_32F && w.dtype() == CUDA_R_16BF) {
         
-        embedding_kernel_f16_f32<<<blocks, threads>>>(
+        embedding_kernel_f16_f32<<<blocks, threads, 0, get_compute_stream()>>>(
             static_cast<const uint32_t*>(input_ids.data()),
             static_cast<const __nv_bfloat16*>(w.data()),
             static_cast<float*>(input_embeds.data()),
             embed_dim,
             neat);
-        
+
     } else if (input_embeds.dtype() == CUDA_R_16BF && w.dtype() == CUDA_R_16BF) {
-        
-        embedding_kernel_bf16_bf16<<<blocks, threads>>>(
+
+        embedding_kernel_bf16_bf16<<<blocks, threads, 0, get_compute_stream()>>>(
             static_cast<const uint32_t*>(input_ids.data()),
             static_cast<const __nv_bfloat16*>(w.data()),
             static_cast<__nv_bfloat16*>(input_embeds.data()),
             embed_dim,
             neat);
-        
+
     } else if (input_embeds.dtype() == CUDA_R_16F && w.dtype() == CUDA_R_16F) {
-        
-        embedding_kernel_f16_f16<<<blocks, threads>>>(
+
+        embedding_kernel_f16_f16<<<blocks, threads, 0, get_compute_stream()>>>(
             static_cast<const uint32_t*>(input_ids.data()),
             static_cast<const __half*>(w.data()),
             static_cast<__half*>(input_embeds.data()),

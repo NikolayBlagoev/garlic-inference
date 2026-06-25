@@ -8,6 +8,8 @@
 #include <iostream>
 #include "../external/json.hpp"
 #include <unordered_map>
+#include <fcntl.h>
+#include <unistd.h>
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -276,5 +278,15 @@ struct ModelLoader {
             sf_it = file_to_shard.find(fl_nm);
         }
         sf_it->second.load_scale(name, t);
+    }
+
+    ~ModelLoader() {
+        for (auto& [path, _] : file_to_shard) {
+            int fd = ::open(path.c_str(), O_RDONLY);
+            if (fd >= 0) {
+                posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+                ::close(fd);
+            }
+        }
     }
 };

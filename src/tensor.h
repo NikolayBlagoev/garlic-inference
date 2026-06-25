@@ -2,9 +2,11 @@
 #include "cuda-common.cuh"
 
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <numeric>
 #include <stdexcept>
+#include <mutex>
 #ifdef FP8_AVAILABLE
 #include <cuda_fp8.h>
 #endif
@@ -22,14 +24,65 @@
     } \
 } while(0)
 
-static cudaStream_t load_offload_stream = nullptr;
+extern cudaStream_t load_offload_stream;
 static cudaStream_t get_load_offload_stream(){
         if(!load_offload_stream){
             cudaStreamCreateWithFlags(&load_offload_stream, cudaStreamNonBlocking);
         }
         return load_offload_stream;
 }
+extern cudaStream_t compute_stream;
+static cudaStream_t get_compute_stream(){
+        if(!compute_stream){
+            cudaStreamCreateWithFlags(&compute_stream, cudaStreamNonBlocking);
+        }
+        return compute_stream;
+}
 
+extern cudaStream_t secondary_compute_stream;
+static cudaStream_t get_secondary_stream(){
+        if(!secondary_compute_stream){
+            cudaStreamCreateWithFlags(&secondary_compute_stream, cudaStreamNonBlocking);
+        }
+        return secondary_compute_stream;
+}
+
+struct PinnedMemPool {
+
+    std::vector<void*> free_list;
+    int allocated, max_el;
+    size_t buf_bytes;
+
+    PinnedMemPool(int n, size_t bytes) : buf_bytes(bytes), allocated(0), max_el(n) {
+        free_list.reserve(n);
+        
+    }
+
+    void* acquire(cudaStream_t stream) {
+        if(allocated < max_el){
+            allocated += 1;
+            void* p;
+            cudaHostAlloc(&p, buf_bytes, cudaHostAllocDefault);
+            cudaStreamSynchronize(stream);
+            return p;
+        }
+        if (free_list.empty()) return nullptr;
+        void* p = free_list.back();
+        free_list.pop_back();
+        return p;
+    }
+
+    void release(void* p) {
+        
+        free_list.push_back(p);
+    }
+
+    ~PinnedMemPool() {
+        for (void* p : free_list) cudaFreeHost(p);
+    }
+};
+
+extern PinnedMemPool* g_expert_pool;
 
 struct DataView {
     void* data;
@@ -37,6 +90,7 @@ struct DataView {
     bool initialized = false;
     long long num_elements;
     int device;
+    bool pinned = false;
     cudaDataType_t dtype;
 
     DataView(){
@@ -49,9 +103,11 @@ struct DataView {
             cudaSetDevice(device);
             cudaMalloc(&data, num_elements * element_size(dtype));
         }else if(on_cpu && initialized){
-            data = std::malloc(num_elements * element_size(dtype));
-            if (!data)
-                throw std::runtime_error("malloc failed for CPU tensor");
+            
+            cudaMallocManaged(&data, num_elements * element_size(dtype), cudaMemAttachGlobal);
+            // data = std::malloc(num_elements * element_size(dtype));
+            // if (!data)
+            //     throw std::runtime_error("malloc failed for CPU tensor");
         }
     }
 
@@ -64,26 +120,49 @@ struct DataView {
     }
 
     void offloadAsync(cudaStream_t stream){
-        if(!data || !initialized || on_cpu) return;
-        void* tmp = std::malloc(num_elements * element_size(dtype));
-        if (!tmp)
-            throw std::runtime_error("malloc failed for CPU tensor");
+        // if(!data || !initialized || on_cpu) return;
+        // void* tmp = nullptr;
+        // if (g_expert_pool) {
+        //     tmp = g_expert_pool->acquire(stream);
+        //     if (tmp){
+        //         pinned = true;
+        //     }
+        // }
+        
+        // if(!tmp){
+        //     pinned = false;
+        //     tmp = std::malloc(num_elements * element_size(dtype));
+        //     if (!tmp)
+        //         throw std::runtime_error("malloc failed for CPU tensor");
+        // }
         on_cpu = true;
-        cudaMemcpy(tmp, data, num_elements * element_size(dtype), cudaMemcpyDeviceToHost);
-        cudaFree(data);
-        data = tmp;
+        cudaMemLocation loc{ cudaMemLocationTypeHost, 0 };
+        cudaError_t err = cudaMemPrefetchAsync(data, num_elements * element_size(dtype), loc, 0, stream);
+        if (err != cudaSuccess) std::fprintf(stderr, "[offloadAsync] cudaMemPrefetchAsync: %s\n", cudaGetErrorString(err));
+        // cudaMemcpyAsync(tmp, data, num_elements * element_size(dtype), cudaMemcpyDeviceToHost, stream);
+        // cudaFreeAsync(data, stream);
+        // data = tmp;
     }
 
     void onloadAsync(cudaStream_t stream){
-        if(!data || !initialized || !on_cpu) return;
-        void* tmp;
-        cudaMalloc(&tmp, num_elements * element_size(dtype));
-        cudaMemcpy(tmp, data, num_elements * element_size(dtype), cudaMemcpyHostToDevice);
-        // Free the CPU buffer after the copy completes, without blocking the CPU.
-        std::free(data);
-        data = tmp;
+        cudaMemLocation loc{ cudaMemLocationTypeDevice, device };
+        cudaError_t err = cudaMemPrefetchAsync(data, num_elements * element_size(dtype), loc, 0, stream);
+        if (err != cudaSuccess) std::fprintf(stderr, "[onloadAsync] cudaMemPrefetchAsync (device=%d): %s\n", device, cudaGetErrorString(err));
+        // if(!data || !initialized || !on_cpu) return;
+        // size_t sz = num_elements * element_size(dtype);
+        // void* gpu_buf;
+        // cudaMallocAsync(&gpu_buf, sz, stream);
+        // cudaMemcpyAsync(gpu_buf, data, sz, cudaMemcpyHostToDevice, stream);
+        // if(pinned){
+        //     cudaLaunchHostFunc(stream, [](void* arg){ g_expert_pool->release(arg); }, data);
+        // }else{
+        //     cudaLaunchHostFunc(stream, [](void* arg){ std::free(arg); }, data);
+        // }
+        
+        // data = gpu_buf;
         on_cpu = false;
     }
+
     void free(){
         if (!data) return;
         if (on_cpu) {
@@ -353,7 +432,7 @@ struct Tensor {
                 memcpy(t._data->data, _data->data, bytes);
             } else {
                 cudaSetDevice(device());
-                CUDA_CHECK(cudaMemcpy(t._data->data, _data->data, bytes, cudaMemcpyDeviceToDevice));
+                CUDA_CHECK(cudaMemcpyAsync(t._data->data, _data->data, bytes, cudaMemcpyDeviceToDevice, get_compute_stream()));
             }
             return t;
         }
@@ -368,7 +447,7 @@ struct Tensor {
                 dst.offset = 0;
             }
             cudaSetDevice(device());
-            CUDA_CHECK(cudaMemcpy(dst._data->data, data(), bytes, cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpyAsync(dst._data->data, data(), bytes, cudaMemcpyDeviceToDevice, get_compute_stream()));
         }
 
         void update_scale(std::vector<int> shape, DataView dv){

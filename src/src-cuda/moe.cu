@@ -304,7 +304,7 @@ void moe_gather(const Tensor& x,
     const size_t smem = (size_t)seql * sizeof(uint32_t);
 
 #define LAUNCH_IDS(K_VAL) \
-    gather_ids_kernel<K_VAL><<<num_experts, WARP_SIZE, smem>>>( \
+    gather_ids_kernel<K_VAL><<<num_experts, WARP_SIZE, smem, get_compute_stream()>>>( \
         (const uint32_t*)expert_ids.data(), (uint32_t*)token_map.data(), \
         (uint32_t*)slot_map.data(), (uint32_t*)expert_offsets.data(), seql, K)
 
@@ -323,15 +323,15 @@ void moe_gather(const Tensor& x,
         ((int64_t)dmodel + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE, 256);
 
     if (x.dtype() == CUDA_R_32F)
-        gather_copy_kernel<float><<<total, copy_threads>>>(
+        gather_copy_kernel<float><<<total, copy_threads, 0, get_compute_stream()>>>(
             (const float*)x.data(), (const uint32_t*)slot_map.data(),
             (float*)gathered.data(), K, dmodel);
     else if (x.dtype() == CUDA_R_16BF)
-        gather_copy_kernel<__nv_bfloat16><<<total, copy_threads>>>(
+        gather_copy_kernel<__nv_bfloat16><<<total, copy_threads, 0, get_compute_stream()>>>(
             (const __nv_bfloat16*)x.data(), (const uint32_t*)slot_map.data(),
             (__nv_bfloat16*)gathered.data(), K, dmodel);
     else if (x.dtype() == CUDA_R_16F)
-        gather_copy_kernel<__half><<<total, copy_threads>>>(
+        gather_copy_kernel<__half><<<total, copy_threads, 0, get_compute_stream()>>>(
             (const __half*)x.data(), (const uint32_t*)slot_map.data(),
             (__half*)gathered.data(), K, dmodel);
 }
@@ -347,7 +347,7 @@ void moe_scatter(Tensor& out,
         ((int64_t)dmodel + WARP_SIZE - 1) / WARP_SIZE * WARP_SIZE, 256);
 
 #define LAUNCH_SCATTER(TYPE, K_VAL) \
-    scatter_kernel<TYPE, K_VAL><<<seql, threads>>>( \
+    scatter_kernel<TYPE, K_VAL><<<seql, threads, 0, get_compute_stream()>>>( \
         (const TYPE*)expert_out.data(), (const float*)expert_weights.data(), \
         (const uint32_t*)slot_map.data(), (TYPE*)out.data(), dmodel)
 

@@ -1,6 +1,11 @@
 #include "cuda-common.cuh"
 #include "tensor.h"
 #include "simple-ops.cuh"
+
+cudaStream_t compute_stream = nullptr;
+cudaStream_t load_offload_stream = nullptr;
+cudaStream_t secondary_compute_stream = nullptr;
+PinnedMemPool* g_expert_pool = nullptr;
 // Processes 4 floats per thread: one float4 load, one uint64 store.
 __global__ void f32_to_bf16(const float* __restrict__ A, __nv_bfloat16* __restrict__ B, int N) {
     int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
@@ -59,12 +64,12 @@ Tensor Tensor::cast_to(cudaDataType_t new_dtype) const {
         int N = out.num_elements();
         int threads = 256;
         int blocks = (N / 4 + threads - 1) / threads;
-        f32_to_bf16<<<blocks, threads>>>(static_cast<const float*>(data()), static_cast<__nv_bfloat16*>(out.data()), N);
+        f32_to_bf16<<<blocks, threads, 0, get_compute_stream()>>>(static_cast<const float*>(data()), static_cast<__nv_bfloat16*>(out.data()), N);
     } else if (dtype() == CUDA_R_16BF && new_dtype == CUDA_R_32F) {
         int N = out.num_elements();
         int threads = 256;
         int blocks = (N / 4 + threads - 1) / threads;
-        bf16_to_f32<<<blocks, threads>>>(static_cast<const __nv_bfloat16*>(data()), static_cast<float*>(out.data()), N);
+        bf16_to_f32<<<blocks, threads, 0, get_compute_stream()>>>(static_cast<const __nv_bfloat16*>(data()), static_cast<float*>(out.data()), N);
     } 
 
     return out;

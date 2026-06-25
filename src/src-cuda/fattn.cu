@@ -117,7 +117,7 @@ void FlashAttnEngine::run(Tensor& o, const Tensor& q, const KVCache& cache) {
     PagedAttnGraph& pg = get_graph(seq_q, q.dtype());
 
     if (cached_seq_q != seq_q) {
-        fill_int_kernel<<<(batch_size + 255) / 256, 256>>>(
+        fill_int_kernel<<<(batch_size + 255) / 256, 256, 0, get_compute_stream()>>>(
             (int*)seq_q_buf, seq_q, batch_size);
         cached_seq_q = seq_q;
     }
@@ -135,5 +135,6 @@ void FlashAttnEngine::run(Tensor& o, const Tensor& q, const KVCache& cache) {
         {pg.o,       o.data()},
     };
 
+    cudnnSetStream(cudnn_handle(), get_compute_stream());
     CUDNN_FE_CHECK(pg.graph->execute(cudnn_handle(), vp, pg.workspace));
 }

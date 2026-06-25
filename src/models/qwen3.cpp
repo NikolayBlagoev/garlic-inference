@@ -132,14 +132,14 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
     // std::cout << "Q "<< hidden.shape[0] << " " <<hidden.shape[1] << " " <<hidden.shape[2] << std::endl;
     // Tensor::list_values(q_proj, 20);
     // std::cout<<"Q"<<std::endl;
-    TIME_PROFILE(matmul(Q, hidden, q_proj, false), &tmrs.selfattn_projections);
+    TIME_PROFILE(matmul(Q, hidden, q_proj), &tmrs.selfattn_projections);
     
     // std::cout << "Q value: ";
     // Tensor::list_values(Q, 20);
     // std::cout<<"K"<<std::endl;
-    TIME_PROFILE(matmul(K, hidden, k_proj, true), &tmrs.selfattn_projections);
+    TIME_PROFILE(matmul(K, hidden, k_proj), &tmrs.selfattn_projections);
     // std::cout<<"V"<<std::endl;
-    TIME_PROFILE(matmul(V, hidden, v_proj, true), &tmrs.selfattn_projections);
+    TIME_PROFILE(matmul(V, hidden, v_proj), &tmrs.selfattn_projections);
     
     TIME_PROFILE(rmsnorm(Q, q_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);
     TIME_PROFILE(rmsnorm(K, k_norm, rms_norm_eps, head_dim), &tmrs.selfattn_rmsnorms);

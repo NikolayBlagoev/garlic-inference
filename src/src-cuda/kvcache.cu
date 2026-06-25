@@ -54,9 +54,9 @@ void KVCache::prepare_table(int seql){
         }
     }
 
-    cudaMemcpy(page_table, host_page_table,
+    cudaMemcpyAsync(page_table, host_page_table,
                 (size_t)batch_size * max_pages_per_seq * sizeof(int),
-                cudaMemcpyHostToDevice);
+                cudaMemcpyHostToDevice, get_compute_stream());
 }
 void KVCache::add_kv(const Tensor& new_k, const Tensor& new_v) {
     
@@ -64,13 +64,13 @@ void KVCache::add_kv(const Tensor& new_k, const Tensor& new_v) {
         
         dim3 grid(batch_size, num_heads, seql);
         if(new_k.dtype() == CUDA_R_16BF){
-            add_kv_kernel<__nv_bfloat16><<<grid, 256>>>(
+            add_kv_kernel<__nv_bfloat16><<<grid, 256, 0, get_compute_stream()>>>(
             (__nv_bfloat16*) new_k.data(), (__nv_bfloat16*) new_v.data(),
             (__nv_bfloat16*) k_pages.data(),     (__nv_bfloat16*) v_pages.data(),
             (int*) page_table,  (int*) qkv_lens,
             batch_size, num_heads, max_pages_per_seq, seql, head_dim);
         }else if(new_k.dtype() == CUDA_R_16F){
-            add_kv_kernel<__half><<<grid, 256>>>(
+            add_kv_kernel<__half><<<grid, 256, 0, get_compute_stream()>>>(
             (__half*) new_k.data(), (__half*) new_v.data(),
             (__half*) k_pages.data(),     (__half*) v_pages.data(),
             (int*) page_table,  (int*) qkv_lens,
@@ -79,6 +79,6 @@ void KVCache::add_kv(const Tensor& new_k, const Tensor& new_v) {
         
 
         for(int b = 0; b < batch_size; b++) host_qkv_lens[b] += seql;
-        increment_qkv_lens_kernel<<<1, batch_size>>>((int*)qkv_lens, seql, batch_size);
+        increment_qkv_lens_kernel<<<1, batch_size, 0, get_compute_stream()>>>((int*)qkv_lens, seql, batch_size);
 
     }

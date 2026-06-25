@@ -73,19 +73,19 @@ void dequant_fp8_blockscale(Tensor& out, const Tensor& in){
     dim3 blocks((rows + 127) / 128, (columns + 7) / 8);
 
     if(out.dtype() == CUDA_R_32F){
-        dequant_fp8_blockscale_kernel<float><<<blocks, threads>>>(
+        dequant_fp8_blockscale_kernel<float><<<blocks, threads, 0, get_compute_stream()>>>(
             (float*)out.data(),
             (const __nv_fp8_e4m3*)in.data(),
             in.scale(),
             rows, columns, scale_rows, scale_cols);
     }else if(out.dtype() == CUDA_R_16BF){
-        dequant_fp8_blockscale_kernel<__nv_bfloat16><<<blocks, threads>>>(
+        dequant_fp8_blockscale_kernel<__nv_bfloat16><<<blocks, threads, 0, get_compute_stream()>>>(
             (__nv_bfloat16*)out.data(),
             (const __nv_fp8_e4m3*)in.data(),
             in.scale(),
             rows, columns, scale_rows, scale_cols);
     }else if(out.dtype() == CUDA_R_16F){
-        dequant_fp8_blockscale_kernel<__half><<<blocks, threads>>>(
+        dequant_fp8_blockscale_kernel<__half><<<blocks, threads, 0, get_compute_stream()>>>(
             (__half*)out.data(),
             (const __nv_fp8_e4m3*)in.data(),
             in.scale(),
@@ -151,10 +151,10 @@ void per_token_fp8_quantize(Tensor& out, const Tensor& in, int M_padded, int kBl
     if (fresh && M_padded > M) {
         // 0 out all not-needed stuff
         cudaMemsetAsync(out.scale() + (size_t)M * (K/kBlockK), 0,
-                        (size_t)(M_padded - M) * (K/kBlockK) * sizeof(float));
+                        (size_t)(M_padded - M) * (K/kBlockK) * sizeof(float), get_compute_stream());
     }
     dim3 grid(K / kBlockK, M);
     dim3 block(32);
-    quantize_act_per_token_block<<<grid, block>>>(
+    quantize_act_per_token_block<<<grid, block, 0, get_compute_stream()>>>(
         (const __nv_bfloat16*)in.data(), (__nv_fp8_e4m3*)out.data(), out.scale(), M, K, kBlockK);
 }

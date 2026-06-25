@@ -115,24 +115,24 @@ void rmsnorm(Tensor& x, const Tensor& weight, float eps, int dim_size) {
     const int block   = 256;
     const int smem_sz = (block / 32) * sizeof(float);
     if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_32F) {
-        rmsnorm_kernel<float, float><<<stride, block, smem_sz>>>(
+        rmsnorm_kernel<float, float><<<stride, block, smem_sz, get_compute_stream()>>>(
             (float*)x.data(), (const float*)weight.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_kernel<float, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_kernel<float, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (float*)x.data(), (const __nv_bfloat16*)weight.data(),
             dim_size, eps, nullptr, nullptr);
-        
+
     } else if (x.dtype() == CUDA_R_16BF && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_kernel<__nv_bfloat16, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_kernel<__nv_bfloat16, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)weight.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16F) {
-        rmsnorm_kernel<__half, __half><<<stride, block, smem_sz>>>(
+        rmsnorm_kernel<__half, __half><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__half*)x.data(), (const __half*)weight.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__half*)x.data(), (const __nv_bfloat16*)weight.data(),
             dim_size, eps, nullptr, nullptr);
     }
@@ -159,24 +159,24 @@ void rmsnorm_fused(Tensor& x, Tensor& residual, const Tensor& weight, float eps,
     const int block   = 256;
     const int smem_sz = (block / 32) * sizeof(float);
     if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_32F) {
-        rmsnorm_fused_kernel<float, float><<<stride, block, smem_sz>>>(
+        rmsnorm_fused_kernel<float, float><<<stride, block, smem_sz, get_compute_stream()>>>(
             (float*)x.data(), (const float*)weight.data(), (float*)residual.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_32F && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_fused_kernel<float, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_fused_kernel<float, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (float*)x.data(), (const __nv_bfloat16*)weight.data(), (float*)residual.data(),
             dim_size, eps, nullptr, nullptr);
-        
+
     } else if (x.dtype() == CUDA_R_16BF && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_fused_kernel<__nv_bfloat16, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_fused_kernel<__nv_bfloat16, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)weight.data(), (__nv_bfloat16*)residual.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16F) {
-        rmsnorm_fused_kernel<__half, __half><<<stride, block, smem_sz>>>(
+        rmsnorm_fused_kernel<__half, __half><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__half*)x.data(), (const __half*)weight.data(), (__half*)residual.data(),
             dim_size, eps, nullptr, nullptr);
     } else if (x.dtype() == CUDA_R_16F && weight.dtype() == CUDA_R_16BF) {
-        rmsnorm_fused_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz>>>(
+        rmsnorm_fused_kernel<__half, __nv_bfloat16><<<stride, block, smem_sz, get_compute_stream()>>>(
             (__half*)x.data(), (const __nv_bfloat16*)weight.data(), (__half*)residual.data(),
             dim_size, eps, nullptr, nullptr);
     }
