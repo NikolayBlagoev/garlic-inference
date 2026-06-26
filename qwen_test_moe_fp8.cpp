@@ -39,7 +39,7 @@ int main() {
     // std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-30b-fp8");
     Qwen3MoeConfig config = Qwen3MoeConfig::from_pretrained("qwen3-30b-fp8");
-    JoseMurinho = new MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers);
+    JoseMurinho = new LRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers);
     
     Qwen3Moe model;
     {
@@ -49,11 +49,11 @@ int main() {
 
     // Init pinned staging pool using actual expert DataView size (gate+up+down packed)
     // Use first offloaded expert from layer 2 onward
-    {
-        const Tensor& rep = model.layers[2].mlp.gate_proj[0];
-        size_t expert_bytes = rep._data->num_elements * Tensor::element_size(rep.dtype());
-        g_expert_pool = new PinnedMemPool(config.num_experts_per_tok*8*config.num_hidden_layers, expert_bytes);
-    }
+    // {
+    //     const Tensor& rep = model.layers[2].mlp.gate_proj[0];
+    //     size_t expert_bytes = rep._data->num_elements * Tensor::element_size(rep.dtype());
+    //     g_expert_pool = new PinnedMemPool(config.num_experts_per_tok*8*config.num_hidden_layers, expert_bytes);
+    // }
 
     // std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     // {
@@ -62,7 +62,12 @@ int main() {
     //     std::this_thread::sleep_for(10000ms);
     // }
     // std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    auto encode = tokenizer.encode("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?");
+    
+    std::string str; 
+
+    std::cout << "Ask the model something: \n"; 
+    std::getline(std::cin, str); 
+    auto encode = tokenizer.encode(str);
     
     Tensor x({1, encode.size()}, CUDA_R_32U, 0);
     x.set_data<uint32_t>(encode, 4*encode.size());
