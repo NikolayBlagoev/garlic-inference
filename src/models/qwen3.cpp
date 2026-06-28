@@ -181,11 +181,12 @@ Tensor Qwen3Attention::forward(Tensor& hidden,
 Tensor Qwen3MLP::forward(Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down){
     
     if(hidden.dtype() == CUDA_R_16BF) std::cout<<"ERORR\n";
-    TIME_PROFILE(matmul(gate, hidden, gate_proj),&tmrs.mlp_matmul);
-    TIME_PROFILE(matmul(up, hidden, up_proj),&tmrs.mlp_matmul);
-    TIME_PROFILE(silu(gate),&tmrs.mlp_silu);
-    TIME_PROFILE(elm_wise(gate, up),&tmrs.mlp_elmwise);
-    
+    // TIME_PROFILE(matmul(gate, hidden, gate_proj),&tmrs.mlp_matmul);
+    // TIME_PROFILE(matmul(up, hidden, up_proj),&tmrs.mlp_matmul);
+    // TIME_PROFILE(silu(gate),&tmrs.mlp_silu);
+    // TIME_PROFILE(elm_wise(gate, up),&tmrs.mlp_elmwise);
+    matmul(gate, hidden, up_proj, gate_proj);
+
     TIME_PROFILE(matmul(down, gate, down_proj),&tmrs.mlp_matmul);
     return down;
 }
