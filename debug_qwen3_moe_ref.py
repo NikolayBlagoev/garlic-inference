@@ -98,7 +98,7 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
 print("Loading model (this may take a while for 30B) …")
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_PATH,
-    torch_dtype="auto",   # respects the FP8 quantization config in config.json
+    torch_dtype="bfloat16",   # respects the FP8 quantization config in config.json
     device_map="auto",
     trust_remote_code=True,
 )

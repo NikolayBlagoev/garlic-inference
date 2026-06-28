@@ -94,7 +94,7 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
         layer.mlp.down_proj.resize(model.config.num_experts);
         for (int j = 0; j < model.config.num_experts; j++) {
             const std::string ep = lp + "mlp.experts." + std::to_string(j) + ".";
-            bool on_cpu = (i >= 8);
+            bool on_cpu = (i >= 2);
 
             // peek at metadata to get shapes and dtype without loading
             const WeightContainer& g_meta = wl.peek(ep + "gate_proj.weight");
@@ -122,7 +122,7 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
             wl.load_scale(ep + "down_proj.weight",  layer.mlp.down_proj[j]);
             
             
-            JoseMurinho->inform(std::to_string(i) + "-" + std::to_string(j), layer.mlp.gate_proj[j]);
+            JoseMurinho->inform(std::to_string(i) + "-" + std::to_string(j), layer.mlp.gate_proj[j], i);
         }
         
         model.layers.push_back(std::move(layer));
@@ -161,56 +161,64 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
     cudaStreamSynchronize(get_compute_stream());
     // std::cout<<std::endl;
     const uint64_t elem_bytes = Tensor::element_size(hidden.dtype());
+    int total_experts_activated = 0;
     for (int e = 0; e < num_experts; e++) {
         uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
         if (n_e == 0) continue;
+        total_experts_activated+=1;
         // std::cout<<"Preparing "<<std::to_string(layer_idx) + "-" + std::to_string(e)<<std::endl;
-        JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e));
+        JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx});
     }
-    if(layer_idx > 1 && layer_idx < layers.size() - 1 && T < 3){
+    int offset = 1;
+    float speculative_top_k = 1.5f;
+    if(layer_idx >= 2-offset && layer_idx < layers.size() - offset && T < 3){
         Tensor tmp_router_logits({B, S, num_experts}, hidden.dtype(), hidden.device());
-        Tensor tmp_router_scores({B*S, (int)1.5*num_experts_per_tok}, CUDA_R_32F, hidden.device());
-        Tensor tmp_router_indices({B*S, (int)1.5*num_experts_per_tok}, CUDA_R_32U, hidden.device());
+        Tensor tmp_router_scores({B*S, (int)speculative_top_k*num_experts_per_tok}, CUDA_R_32F, hidden.device());
+        Tensor tmp_router_indices({B*S, (int)speculative_top_k*num_experts_per_tok}, CUDA_R_32U, hidden.device());
         hidden.shape = {B,S, D};
-        matmul(tmp_router_logits, hidden, layers[layer_idx + 1].mlp.gate, get_secondary_stream());
-        topk(tmp_router_logits, tmp_router_indices, tmp_router_scores, (int)1.5*num_experts_per_tok, get_secondary_stream());
-        std::vector<uint32_t> h_router_indices((int)1.5*num_experts_per_tok);
+        matmul(tmp_router_logits, hidden, layers[layer_idx + offset].mlp.gate, get_secondary_stream());
+        topk(tmp_router_logits, tmp_router_indices, tmp_router_scores, (int)speculative_top_k*num_experts_per_tok, get_secondary_stream());
+        std::vector<uint32_t> h_router_indices((int)speculative_top_k*num_experts_per_tok);
         cudaMemcpyAsync(h_router_indices.data(), tmp_router_indices.data(),
-                ((int)1.5*num_experts_per_tok) * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_secondary_stream());
+                ((int)speculative_top_k*num_experts_per_tok) * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_secondary_stream());
         cudaStreamSynchronize(get_secondary_stream());
-        for (int n_e = 0; n_e < (int)1.5*num_experts_per_tok; n_e++) {
+        for (int n_e = 0; n_e < (int)speculative_top_k*num_experts_per_tok; n_e++) {
             uint32_t e = h_router_indices[n_e];
             
             // std::cout<<"Pre-Preparing "<<std::to_string(layer_idx+1) + "-" + std::to_string(e)<<std::endl;
-            JoseMurinho->prepare(std::to_string(layer_idx+1) + "-" + std::to_string(e));
+            JoseMurinho->prepare(std::to_string(layer_idx+offset) + "-" + std::to_string(e), 0, {layer_idx, layer_idx+1});
         }
         hidden.shape = {T, D};
     }
     
 
-    
-    for (int e = 0; e < num_experts; e++) {
-        uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
-        if (n_e == 0) continue;
-        JoseMurinho->wait(std::to_string(layer_idx) + "-" + std::to_string(e), get_compute_stream());
+    Tensor buffer_outputs({1, B*S, moe_intermediate_size}, hidden.dtype(), hidden.device());
+    std::vector<bool> completed_experts(num_experts, false);
+    int remaining = total_experts_activated;
+    while(remaining > 0){
+        for (int e = 0; e < num_experts; e++) {
+            uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
+            if (completed_experts[e] || n_e == 0) continue;
+            
+            if(!JoseMurinho->is_done(std::to_string(layer_idx) + "-" + std::to_string(e))){
+                continue;
+            }
+            completed_experts[e] = true;
+            remaining--;
+            uint64_t byte_off = (uint64_t)h_offsets[e] * D * elem_bytes;
+            Tensor input_view({1, n_e, D}, gathered._data, byte_off);
+            
+
+            Tensor gate_out({1, n_e, moe_intermediate_size}, buffer_outputs._data, 0);
+            // Tensor up_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
+            matmul(gate_out, input_view, up_proj[e], gate_proj[e]);
+
+
+            Tensor out_view({1, n_e, D}, gathered._data, byte_off);
+            matmul(out_view, gate_out, down_proj[e]);
+            
         
-        uint64_t byte_off = (uint64_t)h_offsets[e] * D * elem_bytes;
-        Tensor input_view({1, n_e, D}, gathered._data, byte_off);
-        
-
-        Tensor gate_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
-        // Tensor up_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
-        matmul(gate_out, input_view, up_proj[e], gate_proj[e]);
-
-
-        // matmul(up_out, input_view, up_proj[e]);
-        // silu(gate_out);
-        // elm_wise(gate_out, up_out);
-
-        Tensor out_view({1, n_e, D}, gathered._data, byte_off);
-        matmul(out_view, gate_out, down_proj[e]);
-        
-    
+        }
     }
     
     
