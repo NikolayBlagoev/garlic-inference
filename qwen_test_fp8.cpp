@@ -78,6 +78,10 @@ int main() {
     std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     {
         using namespace std::chrono_literals;
+        std::this_thread::sleep_for(10000ms);
+    }
+    {
+        using namespace std::chrono_literals;
         auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         std::this_thread::sleep_for(10000ms);
     }

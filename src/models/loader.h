@@ -119,11 +119,6 @@ struct SafeTensorReader {
                 
                 t.update_scale<char>(sm.shape, scale_f32, n_elems * 4);
                 
-            }else{
-              
-                std::exit(1);
-                // return;
-       
             }
                
                 
@@ -162,13 +157,13 @@ struct SafeTensorReader {
     void load_scale(const std::string& name, Tensor& t) const {
 #ifdef FP8_AVAILABLE
         if (t.dtype() != CUDA_R_8F_E4M3){
-            std::exit(1);
+            
             return;
         }
         std::string scale_name = name + "_scale_inv";
         auto sit = weights.find(scale_name);
         if (sit == weights.end()){
-            std::exit(1);
+            
             return;
         }
         const WeightContainer& sm = sit->second;

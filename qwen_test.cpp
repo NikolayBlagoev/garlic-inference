@@ -10,6 +10,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <chrono>
+
 using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::duration;
@@ -51,7 +52,7 @@ int main() {
         std::this_thread::sleep_for(10000ms);
     }
     std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    auto encode = tokenizer.encode("Hello there world! It is so nice to meet you all!");
+    auto encode = tokenizer.encode("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?");
     
     Tensor x({1, encode.size()}, CUDA_R_32U, 0);
     x.set_data<uint32_t>(encode, 4*encode.size());
@@ -71,7 +72,7 @@ int main() {
         kvcaches.reserve(config.num_hidden_layers);
         for (int i = 0; i < config.num_hidden_layers; ++i) {
             kvcaches.emplace_back(config.num_key_value_heads, config.head_dim,
-                                    max_pages, batch_size, max_pages_per_seq);
+                                    max_pages, batch_size, max_pages_per_seq, model.lm_head.dtype());
         }
     }
     std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
@@ -84,7 +85,7 @@ int main() {
     std::cout << std::endl;
     FlashAttnEngine engine(batch_size, config.num_attention_heads,
                             config.num_key_value_heads,
-                            config.head_dim, max_pages, max_pages_per_seq, model.lm_head.dtype());
+                            config.head_dim, max_pages, max_pages_per_seq);
     auto tm1 = high_resolution_clock::now();
     int seq_len = x.shape[1];
     engine.get_graph(seq_len, model.lm_head.dtype());
@@ -102,7 +103,7 @@ int main() {
             auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
             tmrs.argmax += delta2.count();
             tm2 = high_resolution_clock::now();
-            // std::cout << tokenizer.decode(ret);
+            // std::cout << tokenizer.decode(ret) << std::flush;
 
             if(j == 0){
                 x = Tensor({1,1}, CUDA_R_32U, 0);

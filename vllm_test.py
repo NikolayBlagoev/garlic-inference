@@ -7,7 +7,7 @@ pynvml.nvmlInit()
 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
 with PowerProfiler(handle):
     time.sleep(10)
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
 
 prompt = "Explain how KV-cache works in transformers."
 
