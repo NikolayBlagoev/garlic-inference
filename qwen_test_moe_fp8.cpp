@@ -39,8 +39,8 @@ int main() {
     // std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-30b-fp8");
     Qwen3MoeConfig config = Qwen3MoeConfig::from_pretrained("qwen3-30b-fp8");
+    // JoseMurinho = new MRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers, config.num_hidden_layers);
     JoseMurinho = new LRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers);
-    
     Qwen3Moe model;
     {
         // auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);

@@ -167,7 +167,7 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
         if (n_e == 0) continue;
         total_experts_activated+=1;
         // std::cout<<"Preparing "<<std::to_string(layer_idx) + "-" + std::to_string(e)<<std::endl;
-        JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1});
+        JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
     }
     int offset = 2;
     int speculative_top_k = (int)(1.0f*num_experts_per_tok);
@@ -176,12 +176,12 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
         Tensor tmp_router_scores({B*S, speculative_top_k}, CUDA_R_32F, hidden.device());
         Tensor tmp_router_indices({B*S, speculative_top_k}, CUDA_R_32U, hidden.device());
         hidden.shape = {B,S, D};
-        matmul(tmp_router_logits, hidden, layers[layer_idx + offset].mlp.gate, get_compute_stream());
-        topk(tmp_router_logits, tmp_router_indices, tmp_router_scores, speculative_top_k, get_compute_stream());
+        matmul(tmp_router_logits, hidden, layers[layer_idx + offset].mlp.gate, get_secondary_stream());
+        topk(tmp_router_logits, tmp_router_indices, tmp_router_scores, speculative_top_k, get_secondary_stream());
         std::vector<uint32_t> h_router_indices(speculative_top_k);
         cudaMemcpyAsync(h_router_indices.data(), tmp_router_indices.data(),
-                (speculative_top_k) * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_compute_stream());
-        cudaStreamSynchronize(get_compute_stream());
+                (speculative_top_k) * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_secondary_stream());
+        cudaStreamSynchronize(get_secondary_stream());
         for (int n_e = 0; n_e < speculative_top_k; n_e++) {
             uint32_t e = h_router_indices[n_e];
             

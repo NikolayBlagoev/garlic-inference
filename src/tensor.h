@@ -27,14 +27,14 @@
 extern cudaStream_t load_offload_stream;
 static cudaStream_t get_load_offload_stream(){
         if(!load_offload_stream){
-            cudaStreamCreateWithFlags(&load_offload_stream, cudaStreamNonBlocking);
+            cudaStreamCreateWithPriority(&load_offload_stream, cudaStreamNonBlocking, -4);
         }
         return load_offload_stream;
 }
 extern cudaStream_t compute_stream;
 static cudaStream_t get_compute_stream(){
         if(!compute_stream){
-            cudaStreamCreateWithFlags(&compute_stream, cudaStreamNonBlocking);
+            cudaStreamCreateWithPriority(&compute_stream, cudaStreamNonBlocking, 0);
         }
         return compute_stream;
 }
@@ -42,7 +42,7 @@ static cudaStream_t get_compute_stream(){
 extern cudaStream_t secondary_compute_stream;
 static cudaStream_t get_secondary_stream(){
         if(!secondary_compute_stream){
-            cudaStreamCreateWithFlags(&secondary_compute_stream, cudaStreamNonBlocking);
+            cudaStreamCreateWithPriority(&secondary_compute_stream, cudaStreamNonBlocking, -1);
         }
         return secondary_compute_stream;
 }
@@ -91,7 +91,6 @@ struct DataView {
     bool initialized = false;
     long long num_elements;
     int device;
-    bool pinned = false;
     cudaDataType_t dtype;
 
     DataView(){
@@ -105,11 +104,8 @@ struct DataView {
             cudaMalloc(&data, num_elements * element_size(dtype));
         }else if(on_cpu && initialized){
             cudaMallocHost(&data, num_elements * element_size(dtype));
-            // cudaMallocManaged(&data, num_elements * element_size(dtype), cudaMemAttachGlobal);
-            // pin_memory = data;
-            // data = std::malloc(num_elements * element_size(dtype));
-            // if (!data)
-            //     throw std::runtime_error("malloc failed for CPU tensor");
+            pin_memory = data;
+            
         }
     }
 
@@ -122,17 +118,26 @@ struct DataView {
     }
 
     void* offloadAsync(cudaStream_t stream, void* loc){
-        if(loc == nullptr){
-            cudaMallocHost(&loc, num_elements * element_size(dtype));
-        }
         void* tmp = data;
-        cudaMemcpyAsync(loc, tmp, num_elements * element_size(dtype), cudaMemcpyDeviceToHost, stream);
+        if(pin_memory == nullptr){
+            if(loc == nullptr){
+                cudaMallocHost(&loc, num_elements * element_size(dtype));
+            }
+            
+            cudaMemcpyAsync(loc, tmp, num_elements * element_size(dtype), cudaMemcpyDeviceToHost, stream);
+            
+            data = loc;
+            
+        }else{
+            data = pin_memory;
+        }
         on_cpu = true;
-        data = loc;
         return tmp;
+        
     }
 
     void* onloadAsync(cudaStream_t stream, void* loc){
+        pin_memory = data;
         if(loc == nullptr){
             cudaMallocAsync(&loc, num_elements * element_size(dtype), stream);
         }
@@ -140,7 +145,7 @@ struct DataView {
         cudaMemcpyAsync(loc, tmp, num_elements * element_size(dtype), cudaMemcpyHostToDevice, stream);
         on_cpu = false;
         data = loc;
-        return tmp;
+        return nullptr;
     }
 
     void free(){

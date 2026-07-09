@@ -92,22 +92,25 @@ __global__ void elm_wise_kernel_f16_f16(
 }
 
 
-void elm_wise(Tensor& x, const Tensor& w) {
+void elm_wise(Tensor& x, const Tensor& w, cudaStream_t compute_stream) {
+    if(compute_stream == nullptr){
+        compute_stream = get_compute_stream();
+    }
     const long long N = x.num_elements();
     const long long stride = w.num_elements();
     const int threads = 256;
     const int blocks = (N / 4 + threads - 1) / threads;
     if (x.dtype() == CUDA_R_32F && w.dtype() == CUDA_R_32F) {
-        elm_wise_kernel_f32_f32<<<blocks, threads, 0, get_compute_stream()>>>(
+        elm_wise_kernel_f32_f32<<<blocks, threads, 0, compute_stream>>>(
             (float*)x.data(), (const float*)w.data(),
             stride, N);
     } else if (x.dtype() == CUDA_R_16BF && w.dtype() == CUDA_R_16BF) {
-        elm_wise_kernel_bf16_bf16<<<blocks, threads, 0, get_compute_stream()>>>(
+        elm_wise_kernel_bf16_bf16<<<blocks, threads, 0, compute_stream>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)w.data(),
             stride, N);
 
     } else if (x.dtype() == CUDA_R_16F && w.dtype() == CUDA_R_16F) {
-        elm_wise_kernel_f16_f16<<<blocks, threads, 0, get_compute_stream()>>>(
+        elm_wise_kernel_f16_f16<<<blocks, threads, 0, compute_stream>>>(
             (__half*)x.data(), (const __half*)w.data(),
             stride, N);
         
@@ -204,21 +207,24 @@ __global__ void add_inplace_kernel_f16_f16(
 
 
 //computes x = x + w
-void add_inplace(Tensor& x, Tensor& w) {
-const long long N = x.num_elements();
+void add_inplace(Tensor& x, Tensor& w, cudaStream_t compute_stream) {
+    if(compute_stream == nullptr){
+        compute_stream = get_compute_stream();
+    }
+    const long long N = x.num_elements();
     const long long stride = w.num_elements();
     const int threads = 256;
     const int blocks = (N / 4 + threads - 1) / threads;
     if (x.dtype() == CUDA_R_32F && w.dtype() == CUDA_R_32F) {
-        add_inplace_kernel_f32_f32<<<blocks, threads, 0, get_compute_stream()>>>(
+        add_inplace_kernel_f32_f32<<<blocks, threads, 0, compute_stream>>>(
             (float*)x.data(), (const float*)w.data(),
             stride, N);
     } else if (x.dtype() == CUDA_R_16BF && w.dtype() == CUDA_R_16BF) {
-        add_inplace_kernel_bf16_bf16<<<blocks, threads, 0, get_compute_stream()>>>(
+        add_inplace_kernel_bf16_bf16<<<blocks, threads, 0, compute_stream>>>(
             (__nv_bfloat16*)x.data(), (const __nv_bfloat16*)w.data(),
             stride, N);
     } else if (x.dtype() == CUDA_R_16F && w.dtype() == CUDA_R_16F) {
-        add_inplace_kernel_f16_f16<<<blocks, threads, 0, get_compute_stream()>>>(
+        add_inplace_kernel_f16_f16<<<blocks, threads, 0, compute_stream>>>(
             (__half*)x.data(), (const __half*)w.data(),
             stride, N);
     }
@@ -234,7 +240,7 @@ void matmul(Tensor& y, Tensor& x, const Tensor& W, cudaStream_t compute_stream) 
 #ifdef FP8_AVAILABLE
     // FP8 weight with 2-D block scales: dequant to BF16 then GEMM.
     if (W.dtype() == CUDA_R_8F_E4M3 && W.ndim_scale() == 2) {
-        matmul_fp8_blockscale(y, x, W);
+        matmul_fp8_blockscale(y, x, W, compute_stream);
         return;
     }
     // if(x.dtype() == CUDA_R_8F_E4M3 && W.dtype() == CUDA_R_8F_E4M3){
@@ -438,7 +444,7 @@ __global__ void fp8_gemv_groupwise_f16_kernel(
         y[(long long)m * N + n] = __float2half_rn(acc);
 }
 
-void fp8_gemv_groupwise(Tensor& y, const Tensor& W, const Tensor& x) {
+void fp8_gemv_groupwise(Tensor& y, const Tensor& W, const Tensor& x, cudaStream_t compute_stream) {
     int K = W.shape[1];
     int N = W.shape[0];
     // std::cout<<y.shape[0]*y.shape[1]<<"x"<<y.shape[2]<<" "<<x.shape[0]*x.shape[1]<<"x"<<x.shape[2]<<" "<<W.shape[0]<<"x"<<W.shape[1]<<" "<<W.shape_scale[0]<<"x"<<W.shape_scale[1]<<std::endl;
@@ -448,13 +454,13 @@ void fp8_gemv_groupwise(Tensor& y, const Tensor& W, const Tensor& x) {
     dim3 block(32, kGemvBN);
     dim3 grid((N + kGemvBN - 1) / kGemvBN, M);
     if(y.dtype() == CUDA_R_16BF){
-        fp8_gemv_groupwise_bf16_kernel<<<grid, block, 0, get_compute_stream()>>>(
+        fp8_gemv_groupwise_bf16_kernel<<<grid, block, 0, compute_stream>>>(
             (__nv_bfloat16*)y.data(),
             (const __nv_fp8_e4m3*)W.data(), W.scale(),
             (const __nv_bfloat16*)x.data(),
             N, K, M, W.shape_scale[0], W.shape_scale[1]);
     }else if(y.dtype() == CUDA_R_16F){
-        fp8_gemv_groupwise_f16_kernel<<<grid, block, 0, get_compute_stream()>>>(
+        fp8_gemv_groupwise_f16_kernel<<<grid, block, 0, compute_stream>>>(
             (__half*)y.data(),
             (const __nv_fp8_e4m3*)W.data(), W.scale(),
             (const __half*)x.data(),
@@ -466,14 +472,14 @@ void fp8_gemv_groupwise(Tensor& y, const Tensor& W, const Tensor& x) {
 }
 
 
-void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W) {
+void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W, cudaStream_t compute_stream) {
     int B = x.shape[0];
     int S = x.shape[1];
     int K = x.shape[2];   // in_features
     int N = W.shape[0];   // out_features
     int M = B * S;
     if(M > 0){
-        return fp8_gemv_groupwise(y,W,x);
+        return fp8_gemv_groupwise(y,W,x, compute_stream);
     }
 
     matmul_fp8_blockscale_dequant(y,x,W);
@@ -657,7 +663,8 @@ __global__ void fp8_grouped_groupwise_f16_kernel(
     if (tx == 0)
         y[(long long)m * N + n] = __float2half_rn(acc ) * __float2half_rn(silu(acc2));
 }
-void matmul(Tensor& y, Tensor& x, const Tensor& W1, const Tensor& W2) {
+void matmul(Tensor& y, Tensor& x, const Tensor& W1, const Tensor& W2, cudaStream_t compute_stream) {
+    if(compute_stream == nullptr) compute_stream = get_compute_stream();
     int K = W1.shape[1];
     int N = W1.shape[0];
     // std::cout<<y.shape[0]*y.shape[1]<<"x"<<y.shape[2]<<" "<<x.shape[0]*x.shape[1]<<"x"<<x.shape[2]<<" "<<W.shape[0]<<"x"<<W.shape[1]<<" "<<W.shape_scale[0]<<"x"<<W.shape_scale[1]<<std::endl;
@@ -667,14 +674,14 @@ void matmul(Tensor& y, Tensor& x, const Tensor& W1, const Tensor& W2) {
     dim3 block(32, kGemvBN);
     dim3 grid((N + kGemvBN - 1) / kGemvBN, M);
     if(y.dtype() == CUDA_R_16BF){
-        fp8_grouped_groupwise_bf16_kernel<<<grid, block, 0, get_compute_stream()>>>(
+        fp8_grouped_groupwise_bf16_kernel<<<grid, block, 0, compute_stream>>>(
             (__nv_bfloat16*)y.data(),
             (const __nv_fp8_e4m3*)W1.data(), W1.scale(),
             (const __nv_fp8_e4m3*)W2.data(), W2.scale(),
             (const __nv_bfloat16*)x.data(),
             N, K, M, W1.shape_scale[0], W1.shape_scale[1]);
     } else if(y.dtype() == CUDA_R_16F){
-        fp8_grouped_groupwise_f16_kernel<<<grid, block, 0, get_compute_stream()>>>(
+        fp8_grouped_groupwise_f16_kernel<<<grid, block, 0, compute_stream>>>(
             (__half*)y.data(),
             (const __nv_fp8_e4m3*)W1.data(), W1.scale(),
             (const __nv_fp8_e4m3*)W2.data(), W2.scale(),
