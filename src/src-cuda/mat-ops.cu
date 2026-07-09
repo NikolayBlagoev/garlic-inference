@@ -1,6 +1,6 @@
 // #include "cutlass-runner.cuh"
 #include "mat-ops.cuh"
-
+#include <cuda_pipeline.h>
 
 
 __global__ void elm_wise_kernel_f32_f8(
@@ -313,48 +313,76 @@ __global__ void fp8_gemv_groupwise_bf16_kernel(
         const __nv_bfloat16* __restrict__ x,
         int N, int K, int M, int scale_N, int scale_K)
 {
+    __shared__ __align__(16) uint8_t       sW[2][kGemvBN][kGemvSK];
+    __shared__ __align__(16) __nv_bfloat16 sX[2][kGemvSK];
+
     const int tx = threadIdx.x & 31;           // lane: 0..31
     const int ty = threadIdx.y;           // row slot: 0..kGemvBN-1
     const int n  = blockIdx.x * kGemvBN + ty;
     const int m  = blockIdx.y;
 
-    if (n >= N || m >= M) return;
+    const bool row_ok = (n < N) && (m < M);
 
     const __nv_fp8_e4m3* w_row = W + (long long)n * K;
     const __nv_bfloat16* x_row = x + (long long)m * K;
+    auto stage = [&](int buf, int kg) {
+        const int kbase = kg * kGemvSK;
+        // W slice: 128 bytes -> 8 lanes x 16B, per warp, own row
+        if (row_ok && tx < 8)
+            __pipeline_memcpy_async(&sW[buf][ty][tx * 16],
+                                    w_row + kbase + tx * 16, 16);
+        // x slice: 256 bytes -> staged once by warp 0, 16 lanes x 16B
+        if (ty == 0 && tx < 16)
+            __pipeline_memcpy_async(&sX[buf][tx * 8],
+                                    x_row + kbase + tx * 8, 16);
+    };
 
-    int s_col = n * scale_N / N;
-    float factor = K / scale_K;
+    // ---- prologue: fill buffer 0
+    stage(0, 0);
+    __pipeline_commit();
 
     float acc = 0.0f;
+    for (int kg = 0; kg < scale_K; ++kg) {
+        const int cur = kg & 1;
 
-    for (int kg = 0; kg < scale_K; kg++) {
-        float scale = __ldg(W_scale + s_col * scale_K + kg);
-        const int k = kg * kGemvSK + tx * 4;
+        // issue NEXT group's copies before touching current data
+        if (kg + 1 < scale_K) stage(cur ^ 1, kg + 1);
+        __pipeline_commit();
+
+        // wait until only the newest commit group is still in flight
+        // -> current buffer's copies are done
+        __pipeline_wait_prior(1);
+        __syncthreads();   // make warp-0's sX writes visible to all warps
+
+        // ---- compute on sW[cur], sX[cur]
+        const float scale = row_ok
+            ? __ldg(W_scale + (n * scale_N / N) * scale_K + kg) : 0.f;
+
         float partial = 0.0f;
-        if (k + 3 < K) {
-            __nv_fp8x4_e4m3 w4 = *reinterpret_cast<const __nv_fp8x4_e4m3*>(w_row + k);
-            
-            __nv_bfloat162 x01 = *reinterpret_cast<const __nv_bfloat162*>(x_row + k);
-            __nv_bfloat162 x23 = *reinterpret_cast<const __nv_bfloat162*>(x_row + k + 2);
+        // each lane consumes 4 elements, as before, but from smem
+        const int k4 = tx * 4;
+        __nv_fp8x4_e4m3 w4 =
+            *reinterpret_cast<const __nv_fp8x4_e4m3*>(&sW[cur][ty][k4]);
+        __nv_bfloat162 x01 =
+            *reinterpret_cast<const __nv_bfloat162*>(&sX[cur][k4]);
+        __nv_bfloat162 x23 =
+            *reinterpret_cast<const __nv_bfloat162*>(&sX[cur][k4 + 2]);
+        float4 wf  = float4(w4);
+        float2 xf01 = __bfloat1622float2(x01);
+        float2 xf23 = __bfloat1622float2(x23);
+        partial = fmaf(wf.x, xf01.x, partial);
+        partial = fmaf(wf.y, xf01.y, partial);
+        partial = fmaf(wf.z, xf23.x, partial);
+        partial = fmaf(wf.w, xf23.y, partial);
+        acc = fmaf(partial, scale, acc);
 
-            float4 wf = float4(w4);
-            float2 xf01 = __bfloat1622float2(x01);
-            float2 xf23 = __bfloat1622float2(x23);
-
-            partial = fmaf(wf.x, xf01.x, partial);
-            partial = fmaf(wf.y, xf01.y, partial);
-            partial = fmaf(wf.z, xf23.x, partial);
-            partial = fmaf(wf.w, xf23.y, partial);
-        } else {
-            for (int kk = k; kk < K && kk < k + 4; kk++)
-                partial = fmaf(float(w_row[kk]), __bfloat162float(x_row[kk]), partial);
-        }
-        acc = fmaf(partial,scale,acc);
+        // all warps must finish reading buf `cur` before iteration kg+1
+        // stages kg+2 into it
+        __syncthreads();
     }
+
     acc = warp_reduce_sum<32>(acc);
-    
-    if (tx == 0)
+    if (tx == 0 && row_ok)
         y[(long long)m * N + n] = __float2bfloat16_rn(acc);
 }
 
@@ -410,7 +438,7 @@ __global__ void fp8_gemv_groupwise_f16_kernel(
         y[(long long)m * N + n] = __float2half_rn(acc);
 }
 
-void fp8_gemv_groupwise_bf16(Tensor& y, const Tensor& W, const Tensor& x) {
+void fp8_gemv_groupwise(Tensor& y, const Tensor& W, const Tensor& x) {
     int K = W.shape[1];
     int N = W.shape[0];
     // std::cout<<y.shape[0]*y.shape[1]<<"x"<<y.shape[2]<<" "<<x.shape[0]*x.shape[1]<<"x"<<x.shape[2]<<" "<<W.shape[0]<<"x"<<W.shape[1]<<" "<<W.shape_scale[0]<<"x"<<W.shape_scale[1]<<std::endl;
@@ -445,7 +473,7 @@ void matmul_fp8_blockscale(Tensor& y, Tensor& x, const Tensor& W) {
     int N = W.shape[0];   // out_features
     int M = B * S;
     if(M > 0){
-        return fp8_gemv_groupwise_bf16(y,W,x);
+        return fp8_gemv_groupwise(y,W,x);
     }
 
     matmul_fp8_blockscale_dequant(y,x,W);

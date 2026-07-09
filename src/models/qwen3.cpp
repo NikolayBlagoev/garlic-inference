@@ -182,7 +182,7 @@ Tensor Qwen3MLP::forward(Tensor& hidden, Tensor& gate, Tensor& up, Tensor& down)
     
     // if(hidden.dtype() == CUDA_R_16BF) std::cout<<"ERORR\n";
     
-    if(up_proj.dtype() == CUDA_R_8F_E4M3){
+    if(false && up_proj.dtype() == CUDA_R_8F_E4M3){
         matmul(gate, hidden, up_proj, gate_proj);
     } else {
         TIME_PROFILE(matmul(gate, hidden, gate_proj),&tmrs.mlp_matmul);

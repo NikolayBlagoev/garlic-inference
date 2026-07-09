@@ -43,6 +43,43 @@ __global__ void f16_to_bf16(__half* __restrict__ A, int N) {
     
 } 
 
+
+__global__ void swap_kernel(uint8_t* __restrict__ a,
+                            uint8_t* __restrict__ b,
+                            size_t num_elms){
+    const int n16 = (num_elms / 8) * 8;
+    size_t i = ((size_t)blockIdx.x * blockDim.x + threadIdx.x) * 8;
+    size_t stride = (size_t)gridDim.x * blockDim.x * 8;
+    for (; i < n16; i += stride) {
+        uint64_t t1 = *reinterpret_cast<const uint64_t*>(a+i);
+        uint64_t t2 = *reinterpret_cast<const uint64_t*>(b+i);
+        *reinterpret_cast<uint64_t*>(a + i) = t2;
+        *reinterpret_cast<uint64_t*>(b + i) = t1;
+    }
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        for (int i = n16; i < num_elms; i++) {
+            const uint8_t tmp = a[i];
+            a[i]  = b[i];
+            b[i] = tmp;
+        }
+    }
+}
+
+void Tensor::swap(Tensor& a, Tensor& b, cudaStream_t stream){
+    if(a.on_cpu() == b.on_cpu()) return;
+    int dev = 0;
+    int sms = 0; 
+    cudaGetDevice(&dev);
+    cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+    sms = sms * 4;
+    swap_kernel<<<sms, 256, 0, stream>>>(reinterpret_cast<uint8_t*>(a.data()), reinterpret_cast<uint8_t*>(b.data()), a.num_elements()*Tensor::element_size(a.dtype()));
+    bool tmp = b.on_cpu();
+    b._data->on_cpu = a.on_cpu();
+    a._data->on_cpu = tmp;
+    std::swap(a._data->data, b._data->data);
+
+    return;
+}
 Tensor Tensor::cast_to(cudaDataType_t new_dtype) const {
     if(!_data) return *this;
     if(dtype() == new_dtype) return *this;

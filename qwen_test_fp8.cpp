@@ -46,12 +46,12 @@ int main() {
     
     
     std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    {
-        using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
-        std::this_thread::sleep_for(10000ms);
-    }
-    std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // {
+    //     using namespace std::chrono_literals;
+    //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     auto encode = tokenizer.encode("Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?");
     
     Tensor x({1, encode.size()}, CUDA_R_32U, 0);
@@ -76,16 +76,16 @@ int main() {
         }
     }
     std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    {
-        using namespace std::chrono_literals;
-        std::this_thread::sleep_for(10000ms);
-    }
-    {
-        using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
-        std::this_thread::sleep_for(10000ms);
-    }
-    std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // {
+    //     using namespace std::chrono_literals;
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // {
+    //     using namespace std::chrono_literals;
+    //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     std::cout << std::endl;
     FlashAttnEngine engine(batch_size, config.num_attention_heads,
                             config.num_key_value_heads,

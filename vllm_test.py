@@ -7,13 +7,13 @@ pynvml.nvmlInit()
 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
 with PowerProfiler(handle):
     time.sleep(10)
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="not-needed")
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="not-needed")
 
 prompt = "Explain how KV-cache works in transformers."
 
 with PowerProfiler(handle):
     response = client.chat.completions.create(
-        model="qwen3-4b-fp8/",
+        model="qwen3-30b-fp4/",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=600
     )

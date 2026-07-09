@@ -31,12 +31,12 @@ int main() {
     nvmlDeviceGetHandleByIndex(0, &device);
     bool use_cpu = true;
     double joules, tm_ptr, watt_ptr;
-    {
-        using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
-        std::this_thread::sleep_for(10000ms);
-    }
-    std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // {
+    //     using namespace std::chrono_literals;
+    //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // std::cout<<"IDLE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-30b-fp8");
     Qwen3MoeConfig config = Qwen3MoeConfig::from_pretrained("qwen3-30b-fp8");
     JoseMurinho = new LRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers);
@@ -56,12 +56,12 @@ int main() {
     // }
 
     std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    {
-        using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
-        std::this_thread::sleep_for(10000ms);
-    }
-    std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // {
+    //     using namespace std::chrono_literals;
+    //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // std::cout<<"IDLE WITH MODEL Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     
     std::string str; 
 
@@ -94,18 +94,18 @@ int main() {
     // using namespace std::chrono_literals;
     // std::this_thread::sleep_for(60000ms);
     // std::exit(0);
-    std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    {
-        using namespace std::chrono_literals;
-        std::this_thread::sleep_for(10000ms);
-    }
-    {
-        using namespace std::chrono_literals;
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
-        std::this_thread::sleep_for(10000ms);
-    }
-    std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
-    std::cout << std::endl;
+    // std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // {
+    //     using namespace std::chrono_literals;
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // {
+    //     using namespace std::chrono_literals;
+    //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+    //     std::this_thread::sleep_for(10000ms);
+    // }
+    // std::cout<<"IDLE WITH KV CACHE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // std::cout << std::endl;
     FlashAttnEngine engine(batch_size, config.num_attention_heads,
                             config.num_key_value_heads,
                             config.head_dim, max_pages, max_pages_per_seq);
@@ -126,7 +126,7 @@ int main() {
             auto delta2 = duration_cast<microseconds>(high_resolution_clock::now() - tm2);
             tmrs.argmax += delta2.count();
             tm2 = high_resolution_clock::now();
-            // std::cout << tokenizer.decode(ret) << std::flush;
+            std::cout << tokenizer.decode(ret) << std::flush;
 
             if(j == 0){
                 x = Tensor({1,1}, CUDA_R_32U, 0);

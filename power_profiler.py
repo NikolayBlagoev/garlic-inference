@@ -9,7 +9,7 @@ def _read_rapl(path):
         return int(f.read().strip())
 
 class PowerProfiler:
-    def __init__(self, handle, use_cpu=True):
+    def __init__(self, handle, use_cpu=False):
         self.power_before_gpu = 0
         self.power_before_cpu = 0
         self.rapl_max = 0
