@@ -40,7 +40,7 @@ int main() {
     BPETokenizer tokenizer = BPETokenizer::load("qwen3-30b-fp8");
     Qwen3MoeConfig config = Qwen3MoeConfig::from_pretrained("qwen3-30b-fp8");
     // JoseMurinho = new MRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers, config.num_hidden_layers);
-    JoseMurinho = new LRU_MoEManager(config.num_experts_per_tok*3*config.num_hidden_layers);
+    JoseMurinho = new LRU_MoEManager(config.num_experts_per_tok*5*config.num_hidden_layers);
     Qwen3Moe model;
     {
         // auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
@@ -113,7 +113,7 @@ int main() {
     int seq_len = x.shape[1];
     engine.get_graph(seq_len, model.lm_head.dtype());
     {
-        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+        // auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         for(int j = 0; j < 601; j++){
             // std::cout<<j<<std::endl;
             seq_len = x.shape[1];
@@ -155,34 +155,34 @@ int main() {
     float s = (float) delta.count() / 1000.0f;
     std::cout << "Tok/s: " << 600/s << std::endl;
 
-    std::cout<< "KV cache prepare: " << tmrs.kv_cache_prepare / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "ARGMAX: " << tmrs.argmax / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Embedding: " << tmrs.embedding / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Deembedding: " << tmrs.deembedding / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Rope forward: " << tmrs.rope_forward / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Casting: " << tmrs.casting / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Add in place: " << tmrs.addinplace / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Make copy: " << tmrs.makecopy / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "KV cache prepare: " << tmrs.kv_cache_prepare / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "ARGMAX: " << tmrs.argmax / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Embedding: " << tmrs.embedding / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Deembedding: " << tmrs.deembedding / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Rope forward: " << tmrs.rope_forward / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Casting: " << tmrs.casting / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Add in place: " << tmrs.addinplace / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Make copy: " << tmrs.makecopy / (1000.0 * 1000.0) << std::endl;
     
-    std::cout<< "Attention total: " << tmrs.selfattn / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention Inits: " << tmrs.selfattn_inits / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention cast: " << tmrs.selfattn_cast / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention kvcache: " << tmrs.selfattn_kvcacheadd / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention projections: " << tmrs.selfattn_projections / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Atention rms norms: " << tmrs.selfattn_rmsnorms / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention posembs: " << tmrs.selfattn_posembs / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention transpose: " << tmrs.selfattn_transpose / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "Attention attention: " << tmrs.selfattn_attn / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention total: " << tmrs.selfattn / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention Inits: " << tmrs.selfattn_inits / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention cast: " << tmrs.selfattn_cast / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention kvcache: " << tmrs.selfattn_kvcacheadd / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention projections: " << tmrs.selfattn_projections / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Atention rms norms: " << tmrs.selfattn_rmsnorms / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention posembs: " << tmrs.selfattn_posembs / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention transpose: " << tmrs.selfattn_transpose / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "Attention attention: " << tmrs.selfattn_attn / (1000.0 * 1000.0) << std::endl;
     
 
-    std::cout<< "MLP total: " << tmrs.mlp / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "MLP cast: " << tmrs.mlp_cast / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "MLP matmul: " << tmrs.mlp_matmul / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "MLP silu: " << tmrs.mlp_silu / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "MLP element wise: " << tmrs.mlp_elmwise / (1000.0 * 1000.0) << std::endl;
-    std::cout<< "MLP inits: " << tmrs.mlp_inits / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP total: " << tmrs.mlp / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP cast: " << tmrs.mlp_cast / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP matmul: " << tmrs.mlp_matmul / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP silu: " << tmrs.mlp_silu / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP element wise: " << tmrs.mlp_elmwise / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MLP inits: " << tmrs.mlp_inits / (1000.0 * 1000.0) << std::endl;
 
 
-    std::cout<< "MISC: " << tmrs.misc / (1000.0 * 1000.0) << std::endl;
+    // std::cout<< "MISC: " << tmrs.misc / (1000.0 * 1000.0) << std::endl;
     return 0;
 }

@@ -162,9 +162,11 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
     // std::cout<<std::endl;
     const uint64_t elem_bytes = Tensor::element_size(hidden.dtype());
     int total_experts_activated = 0;
+    uint32_t largest_n_e = 0;
     for (int e = 0; e < num_experts; e++) {
         uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
         if (n_e == 0) continue;
+        if(n_e > largest_n_e) largest_n_e = n_e;
         total_experts_activated+=1;
         // std::cout<<"Preparing "<<std::to_string(layer_idx) + "-" + std::to_string(e)<<std::endl;
         JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
@@ -195,6 +197,7 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
     Tensor buffer_outputs({1, B*S, moe_intermediate_size}, hidden.dtype(), hidden.device());
     std::vector<bool> completed_experts(num_experts, false);
     int remaining = total_experts_activated;
+    Tensor gate_out({1, largest_n_e, moe_intermediate_size}, buffer_outputs._data, 0);
     while(remaining > 0){
         for (int e = 0; e < num_experts; e++) {
             uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
@@ -209,8 +212,9 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
             Tensor input_view({1, n_e, D}, gathered._data, byte_off);
             
 
-            Tensor gate_out({1, n_e, moe_intermediate_size}, buffer_outputs._data, 0);
+            // Tensor gate_out({1, n_e, moe_intermediate_size}, buffer_outputs._data, 0);
             // Tensor up_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
+            gate_out.shape = {1, n_e, moe_intermediate_size};
             matmul(gate_out, input_view, up_proj[e], gate_proj[e]);
 
 
