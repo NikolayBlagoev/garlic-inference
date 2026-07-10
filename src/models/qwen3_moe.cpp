@@ -13,6 +13,7 @@
 #include "../kvcache.h"
 #include "profiler.h"
 #include "moe-cache.h"
+#include "../cpu-ops/cpu_expert_runtime.h"
 #include <cuda_runtime.h>
 #include <fstream>
 #include <stdexcept>
@@ -48,6 +49,10 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
     Qwen3Moe model;
     model.config = Qwen3MoeConfig::from_pretrained(hf_dir);
     ModelLoader wl(hf_dir);
+
+    // [cpu-moe] set up the CPU cold-expert runtime before experts register
+    g_cpu_moe.init(model.config.hidden_size, model.config.moe_intermediate_size,
+                   model.config.num_hidden_layers, model.config.num_experts);
 
     model.rotary_embedding.attention_scaling = 1.0f;
     model.rotary_embedding.inv_freq = Tensor({model.config.head_dim / 2}, CUDA_R_32F, device);
@@ -120,8 +125,12 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
             wl.load_scale(ep + "gate_proj.weight", layer.mlp.gate_proj[j]);
             wl.load_scale(ep + "up_proj.weight",   layer.mlp.up_proj[j]);
             wl.load_scale(ep + "down_proj.weight",  layer.mlp.down_proj[j]);
-            
-            
+
+            // [cpu-moe] capture host weight views + host scale mirrors.
+            // No-op for GPU-resident experts (layers 0-1) or non-FP8 dtypes.
+            g_cpu_moe.register_expert(i, j, layer.mlp.gate_proj[j],
+                                      layer.mlp.up_proj[j], layer.mlp.down_proj[j]);
+
             JoseMurinho->inform(std::to_string(i) + "-" + std::to_string(j), layer.mlp.gate_proj[j], i);
         }
         
@@ -159,18 +168,39 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
     cudaMemcpyAsync(h_offsets.data(), expert_offsets.data(),
                (num_experts + 1) * sizeof(uint32_t), cudaMemcpyDeviceToHost, get_compute_stream());
     cudaStreamSynchronize(get_compute_stream());
-    // std::cout<<std::endl;
+    // ^ this sync also guarantees `gathered` is fully written, which the
+    //   [cpu-moe] D2H staging below relies on.
     const uint64_t elem_bytes = Tensor::element_size(hidden.dtype());
-    int total_experts_activated = 0;
-    uint32_t largest_n_e = 0;
+
+    // [cpu-moe] Dispatch decision. An expert goes to the CPU path iff its
+    // weights are NOT in VRAM right now (on_cpu() is only accurate BEFORE any
+    // prepare() call for it this step) and its token count is small enough
+    // that computing on host beats a 4.7 MB PCIe fetch. Everything else takes
+    // the unchanged GPU route. `cpu_slot[e]` >= 0 marks CPU-path experts.
+    g_cpu_moe.begin_layer();
+    std::vector<int> cpu_slot(num_experts, -1);
+    int total_experts_activated = 0;   // GPU-path experts only
     for (int e = 0; e < num_experts; e++) {
         uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
         if (n_e == 0) continue;
-        if(n_e > largest_n_e) largest_n_e = n_e;
+        if (gate_proj[e].on_cpu() &&
+            g_cpu_moe.eligible(layer_idx, e, (int)n_e, gathered.dtype())) {
+            int s = g_cpu_moe.stage(layer_idx, e, h_offsets[e], (int)n_e, gathered);
+            if (s >= 0) {
+                cpu_slot[e] = s;
+                // Optionally still warm the VRAM cache for FUTURE tokens; the
+                // transfer overlaps this step's CPU compute and is never read
+                // this step. The pinned source outlives the copy by design.
+                if (g_cpu_moe.warm_cache)
+                    JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
+                continue;
+            }
+        }
         total_experts_activated+=1;
-        // std::cout<<"Preparing "<<std::to_string(layer_idx) + "-" + std::to_string(e)<<std::endl;
         JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
     }
+    g_cpu_moe.launch_jobs();   // one xfer-stream sync (KBs), then pool starts
+
     int offset = 2;
     int speculative_top_k = (int)(1.0f*num_experts_per_tok);
     if(layer_idx >= 2-offset && layer_idx < layers.size() - offset && T < 3){
@@ -187,7 +217,6 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
         for (int n_e = 0; n_e < speculative_top_k; n_e++) {
             uint32_t e = h_router_indices[n_e];
             
-            // std::cout<<"Pre-Preparing "<<std::to_string(layer_idx+1) + "-" + std::to_string(e)<<std::endl;
             JoseMurinho->prepare(std::to_string(layer_idx+offset) + "-" + std::to_string(e), 0, {layer_idx, layer_idx+1, layer_idx+2});
         }
         hidden.shape = {T, D};
@@ -196,13 +225,24 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
 
     Tensor buffer_outputs({1, B*S, moe_intermediate_size}, hidden.dtype(), hidden.device());
     std::vector<bool> completed_experts(num_experts, false);
+    // [cpu-moe] The busy-wait that used to only poll H2D readiness now also
+    // drains finished CPU jobs, so their H2D result copies overlap the GPU
+    // experts' GEMVs instead of serializing after them.
     int remaining = total_experts_activated;
-    Tensor gate_out({1, largest_n_e, moe_intermediate_size}, buffer_outputs._data, 0);
-    while(remaining > 0){
+    int remaining_cpu = g_cpu_moe.n_slots;
+    while(remaining > 0 || remaining_cpu > 0){
         for (int e = 0; e < num_experts; e++) {
             uint32_t n_e = h_offsets[e + 1] - h_offsets[e];
             if (completed_experts[e] || n_e == 0) continue;
-            
+
+            if (cpu_slot[e] >= 0) {   // [cpu-moe] CPU-path expert
+                if (g_cpu_moe.poll_and_flush(cpu_slot[e], gathered)) {
+                    completed_experts[e] = true;
+                    remaining_cpu--;
+                }
+                continue;
+            }
+
             if(!JoseMurinho->is_done(std::to_string(layer_idx) + "-" + std::to_string(e))){
                 continue;
             }
@@ -212,9 +252,8 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
             Tensor input_view({1, n_e, D}, gathered._data, byte_off);
             
 
-            // Tensor gate_out({1, n_e, moe_intermediate_size}, buffer_outputs._data, 0);
+            Tensor gate_out({1, n_e, moe_intermediate_size}, buffer_outputs._data, 0);
             // Tensor up_out({1, n_e, moe_intermediate_size}, hidden.dtype(), hidden.device());
-            gate_out.shape = {1, n_e, moe_intermediate_size};
             matmul(gate_out, input_view, up_proj[e], gate_proj[e]);
 
 
@@ -224,8 +263,9 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
         
         }
     }
-    
-    
+    // [cpu-moe] fence: compute stream must observe every CPU expert's H2D
+    // before moe_scatter reads those gathered rows. No-op when n_slots == 0.
+    g_cpu_moe.finish_layer(gathered, get_compute_stream());
     
     moe_scatter(hidden, gathered, router_scores, slot_map, T, num_experts_per_tok);
     hidden.shape = {B, S, D};

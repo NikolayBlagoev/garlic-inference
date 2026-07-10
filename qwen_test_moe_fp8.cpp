@@ -47,15 +47,8 @@ int main() {
         model = Qwen3Moe::from_pretrained("qwen3-30b-fp8");
     }
 
-    // Init pinned staging pool using actual expert DataView size (gate+up+down packed)
-    // Use first offloaded expert from layer 2 onward
-    // {
-    //     const Tensor& rep = model.layers[2].mlp.gate_proj[0];
-    //     size_t expert_bytes = rep._data->num_elements * Tensor::element_size(rep.dtype());
-    //     g_expert_pool = new PinnedMemPool(config.num_experts_per_tok*8*config.num_hidden_layers, expert_bytes);
-    // }
 
-    std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
+    // std::cout<<"MODEL LOADING Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     // {
     //     using namespace std::chrono_literals;
     //     auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
@@ -91,9 +84,7 @@ int main() {
         }
     }
     // std::cout<<"Model ready"<<std::endl;
-    // using namespace std::chrono_literals;
-    // std::this_thread::sleep_for(60000ms);
-    // std::exit(0);
+
     // std::cout<<"KV CACHE CREATION Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     // {
     //     using namespace std::chrono_literals;
@@ -113,7 +104,7 @@ int main() {
     int seq_len = x.shape[1];
     engine.get_graph(seq_len, model.lm_head.dtype());
     {
-        // auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
+        auto elm = PowerProfiler(&joules, &tm_ptr, &watt_ptr, device, use_cpu);
         for(int j = 0; j < 601; j++){
             // std::cout<<j<<std::endl;
             seq_len = x.shape[1];
@@ -146,6 +137,7 @@ int main() {
             tmrs.misc += delta2.count();
 
         }
+        std::cout << std::endl;
     }
     std::cout<<"INFERENCE Joules: "<<joules<<"J Time: "<<tm_ptr<<"s "<<watt_ptr<<"W\n";
     

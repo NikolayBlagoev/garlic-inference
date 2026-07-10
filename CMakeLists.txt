@@ -50,6 +50,7 @@ elseif("${RUN_TEST}" STREQUAL "qwen3-moe")
         src/models/qwen3.cpp
         src/models/qwen3_moe.cpp
         src/tokenizers/bpe.cpp
+        src/cpu-ops/fp8_expert_cpu.cpp
         src/src-cuda/simple-ops.cu
         src/src-cuda/argmax.cu
         src/src-cuda/mat-ops.cu
@@ -91,6 +92,12 @@ string(REGEX REPLACE "[^0-9].*" "" FIRST_ARCH_NUM "${FIRST_ARCH}")
 if(FIRST_ARCH_NUM GREATER_EQUAL 120)
     target_compile_definitions(runner PRIVATE USE_CUTLASS_FP8)
 endif()
+
+# [cpu-moe] The build sets no CMAKE_BUILD_TYPE, so host C++ would compile at
+# -O0. The CPU expert kernel is hot-path compute: force -O3 on CXX TUs.
+# NOTE: do NOT add -ffast-math anywhere near fp8_expert_cpu.cpp — FTZ/DAZ
+# would silently break FP8-E4M3 subnormal decoding.
+target_compile_options(runner PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-O3>)
 
 target_link_libraries(runner PRIVATE cublas cublasLt cudnn nvrtc pthread nvidia-ml)
 target_compile_options(runner PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-pthread>)
