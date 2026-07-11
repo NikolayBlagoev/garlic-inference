@@ -191,8 +191,8 @@ Tensor Qwen3MoeSparseMoeBlock::forward(Tensor& hidden, Tensor& router_logits,
                 // Optionally still warm the VRAM cache for FUTURE tokens; the
                 // transfer overlaps this step's CPU compute and is never read
                 // this step. The pinned source outlives the copy by design.
-                if (g_cpu_moe.warm_cache)
-                    JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
+                // if (g_cpu_moe.warm_cache)
+                //     JoseMurinho->prepare(std::to_string(layer_idx) + "-" + std::to_string(e), 1.0, {layer_idx, layer_idx+1, layer_idx+2});
                 continue;
             }
         }

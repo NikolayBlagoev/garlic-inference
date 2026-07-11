@@ -64,7 +64,7 @@ struct CpuMoeRuntime {
     std::vector<std::vector<float>> scale_store;    // owns host scale mirrors
 
     // ---- per-layer working state --------------------------------------------
-    static constexpr int kMaxSlots = 16;
+    static constexpr int kMaxSlots = 4;
     struct Slot {
         garlic_cpu::ExpertJob job;
         int         expert     = -1;
@@ -99,7 +99,7 @@ struct CpuMoeRuntime {
         scale_store.clear();
         scale_store.reserve((size_t)L * E * 3);
 
-        int nthr = 10;
+        int nthr = 0;
         exec = new garlic_cpu::ExpertExecutor(nthr, /*reserve=*/2);
 
         const size_t stage_elems = (size_t)kMaxSlots * token_threshold * H;
