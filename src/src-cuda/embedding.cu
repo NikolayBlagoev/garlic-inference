@@ -153,15 +153,4 @@ void embedding_forward(Tensor& input_embeds, const Tensor& input_ids, const Tens
             neat);
         
     }
-// #ifdef FP8_AVAILABLE
-//     else if (input_embeds.dtype() == CUDA_R_32F && w.dtype() == CUDA_R_8F_E4M3) {
-//         embedding_kernel_f8_f32<<<blocks, threads>>>(
-//             static_cast<const uint32_t*>(input_ids.data()),
-//             static_cast<const __nv_fp8_e4m3*>(w.data()),
-//             w._data->scale,
-//             static_cast<float*>(input_embeds.data()),
-//             embed_dim,
-//             neat);
-//     }
-// #endif
 }

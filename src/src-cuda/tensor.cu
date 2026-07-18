@@ -5,7 +5,8 @@
 cudaStream_t compute_stream = nullptr;
 cudaStream_t load_offload_stream = nullptr;
 cudaStream_t secondary_compute_stream = nullptr;
-PinnedMemPool* g_expert_pool = nullptr;
+
+
 // Processes 4 floats per thread: one float4 load, one uint64 store.
 __global__ void f32_to_bf16(const float* __restrict__ A, __nv_bfloat16* __restrict__ B, int N) {
     int i = (blockIdx.x * blockDim.x + threadIdx.x) * 4;

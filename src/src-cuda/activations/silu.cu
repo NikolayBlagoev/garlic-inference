@@ -1,9 +1,5 @@
 #include "activations.cuh"
 
-__device__ __forceinline__ float silu(float x) {
-    return x / (1 + expf(-x));
-}
-
 template<typename T>
 __device__ inline void silu4(T* p) {
     p[0] = T(silu(float(p[0])));

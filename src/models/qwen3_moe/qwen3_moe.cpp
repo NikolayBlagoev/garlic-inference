@@ -1,27 +1,27 @@
 #include "qwen3_moe.h"
 
 
-#include "../src-cuda/embedding.cuh"
-#include "../src-cuda/norm.cuh"
-#include "../src-cuda/rope.cuh"
-#include "../src-cuda/mat-ops.cuh"
-#include "../src-cuda/simple-ops.cuh"
-#include "../src-cuda/activations.cuh"
-#include "../src-cuda/fattn.cuh"
-#include "../src-cuda/moe.cuh"
-#include "../src-cuda/argmax.cuh"
-#include "../kvcache.h"
+#include "embedding.cuh"
+#include "norm.cuh"
+#include "rope.cuh"
+#include "mat-ops.cuh"
+#include "simple-ops.cuh"
+#include "activations.cuh"
+#include "fattn.cuh"
+#include "moe.cuh"
+#include "argmax.cuh"
+#include "kvcache.h"
 #include "profiler.h"
-#include "moe-cache.h"
-#include "../cpu-ops/cpu_expert_runtime.h"
+#include "moe-managers/moe-cache.h"
+#include "cpu_expert_runtime.h"
 #include <cuda_runtime.h>
 #include <fstream>
 #include <stdexcept>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include "../external/json.hpp"
-#include "loader.h"
+#include "../../external/json.hpp"
+#include "../loader.h"
 
 namespace fs = std::filesystem;
 
@@ -29,6 +29,7 @@ Qwen3MoeConfig Qwen3MoeConfig::from_pretrained(const std::string& hf_dir) {
     std::ifstream f(hf_dir + "/config.json");
     json cfg = json::parse(f);
     Qwen3MoeConfig c;
+    c.hf_dir = hf_dir;
     c.hidden_size = cfg["hidden_size"].get<int>();
     c.num_hidden_layers = cfg["num_hidden_layers"].get<int>();
     c.num_attention_heads = cfg["num_attention_heads"].get<int>();
@@ -45,45 +46,49 @@ Qwen3MoeConfig Qwen3MoeConfig::from_pretrained(const std::string& hf_dir) {
     return c;
 };
 
-Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
-    Qwen3Moe model;
-    model.config = Qwen3MoeConfig::from_pretrained(hf_dir);
-    ModelLoader wl(hf_dir);
+std::unique_ptr<Qwen3Moe> Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
+    return Qwen3Moe::from_pretrained(Qwen3MoeConfig::from_pretrained(hf_dir), device);
+}
+
+std::unique_ptr<Qwen3Moe> Qwen3Moe::from_pretrained(const Qwen3MoeConfig& config, int device) {
+    auto model = std::make_unique<Qwen3Moe>();
+    model->config = config;
+    ModelLoader wl(model->config.hf_dir);
 
     // [cpu-moe] set up the CPU cold-expert runtime before experts register
-    g_cpu_moe.init(model.config.hidden_size, model.config.moe_intermediate_size,
-                   model.config.num_hidden_layers, model.config.num_experts);
+    g_cpu_moe.init(model->config.hidden_size, model->config.moe_intermediate_size,
+                   model->config.num_hidden_layers, model->config.num_experts);
 
-    model.rotary_embedding.attention_scaling = 1.0f;
-    model.rotary_embedding.inv_freq = Tensor({model.config.head_dim / 2}, CUDA_R_32F, device);
-    initialize_rope(model.config.rope_theta, model.rotary_embedding.inv_freq);
+    model->rotary_embedding.attention_scaling = 1.0f;
+    model->rotary_embedding.inv_freq = Tensor({model->config.head_dim / 2}, CUDA_R_32F, device);
+    initialize_rope(model->config.rope_theta, model->rotary_embedding.inv_freq);
 
-    model.embed_tokens = wl.load("model.embed_tokens.weight", device);
-    model.norm = wl.load("model.norm.weight", device);
+    model->embed_tokens = wl.load("model.embed_tokens.weight", device);
+    model->norm = wl.load("model.norm.weight", device);
 
-    model.lm_head = wl.load("lm_head.weight", device);
+    model->lm_head = wl.load("lm_head.weight", device);
 
-    model.layers.reserve(model.config.num_hidden_layers);
-    
-    for (int i = 0; i < model.config.num_hidden_layers; i++) {
+    model->layers.reserve(model->config.num_hidden_layers);
+
+    for (int i = 0; i < model->config.num_hidden_layers; i++) {
         std::cout<<"LOADING LAYER "<<i<<std::endl;
         const std::string lp = "model.layers." + std::to_string(i) + ".";
 
         Qwen3MoeDecoderLayer layer;
         layer.idx = i;
-        layer.rms_norm_eps = model.config.rms_norm_eps;
+        layer.rms_norm_eps = model->config.rms_norm_eps;
 
-        layer.mlp.moe_intermediate_size = model.config.moe_intermediate_size;
-        layer.mlp.num_experts_per_tok = model.config.num_experts_per_tok;
-        layer.mlp.num_experts = model.config.num_experts;
+        layer.mlp.moe_intermediate_size = model->config.moe_intermediate_size;
+        layer.mlp.num_experts_per_tok = model->config.num_experts_per_tok;
+        layer.mlp.num_experts = model->config.num_experts;
 
         layer.input_layernorm = wl.load(lp + "input_layernorm.weight", device);
         layer.post_attention_layernorm = wl.load(lp + "post_attention_layernorm.weight", device);
 
-        layer.self_attn.num_heads = model.config.num_attention_heads;
-        layer.self_attn.head_dim = model.config.head_dim;
-        layer.self_attn.num_kv_heads = model.config.num_key_value_heads;
-        layer.self_attn.rms_norm_eps = model.config.rms_norm_eps;
+        layer.self_attn.num_heads = model->config.num_attention_heads;
+        layer.self_attn.head_dim = model->config.head_dim;
+        layer.self_attn.num_kv_heads = model->config.num_key_value_heads;
+        layer.self_attn.rms_norm_eps = model->config.rms_norm_eps;
         layer.self_attn.q_proj = wl.load(lp + "self_attn.q_proj.weight", device);
         layer.self_attn.k_proj = wl.load(lp + "self_attn.k_proj.weight", device);
         layer.self_attn.v_proj = wl.load(lp + "self_attn.v_proj.weight", device);
@@ -94,10 +99,10 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
         // TODO: CHECK IF tie word embeddings is true or false!
         layer.mlp.gate = wl.load(lp + "mlp.gate.weight", device);
         layer.mlp.layer_idx = i;
-        layer.mlp.gate_proj.resize(model.config.num_experts);
-        layer.mlp.up_proj.resize(model.config.num_experts);
-        layer.mlp.down_proj.resize(model.config.num_experts);
-        for (int j = 0; j < model.config.num_experts; j++) {
+        layer.mlp.gate_proj.resize(model->config.num_experts);
+        layer.mlp.up_proj.resize(model->config.num_experts);
+        layer.mlp.down_proj.resize(model->config.num_experts);
+        for (int j = 0; j < model->config.num_experts; j++) {
             const std::string ep = lp + "mlp.experts." + std::to_string(j) + ".";
             bool on_cpu = (i >= 2);
 
@@ -133,8 +138,8 @@ Qwen3Moe Qwen3Moe::from_pretrained(const std::string& hf_dir, int device) {
 
             JoseMurinho->inform(std::to_string(i) + "-" + std::to_string(j), layer.mlp.gate_proj[j], i);
         }
-        
-        model.layers.push_back(std::move(layer));
+
+        model->layers.push_back(std::move(layer));
     }
 
     return model;

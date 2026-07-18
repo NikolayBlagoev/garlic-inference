@@ -47,42 +47,7 @@ static cudaStream_t get_secondary_stream(){
         return secondary_compute_stream;
 }
 
-struct PinnedMemPool {
 
-    std::vector<void*> free_list;
-    int allocated, max_el;
-    size_t buf_bytes;
-
-    PinnedMemPool(int n, size_t bytes) : buf_bytes(bytes), allocated(0), max_el(n) {
-        free_list.reserve(n);
-        
-    }
-
-    void* acquire(cudaStream_t stream) {
-        if(allocated < max_el){
-            allocated += 1;
-            void* p;
-            cudaHostAlloc(&p, buf_bytes, cudaHostAllocDefault);
-            cudaStreamSynchronize(stream);
-            return p;
-        }
-        if (free_list.empty()) return nullptr;
-        void* p = free_list.back();
-        free_list.pop_back();
-        return p;
-    }
-
-    void release(void* p) {
-        
-        free_list.push_back(p);
-    }
-
-    ~PinnedMemPool() {
-        for (void* p : free_list) cudaFreeHost(p);
-    }
-};
-
-extern PinnedMemPool* g_expert_pool;
 
 struct DataView {
     void* data;

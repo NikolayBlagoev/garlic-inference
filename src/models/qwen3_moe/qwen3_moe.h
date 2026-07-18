@@ -2,13 +2,16 @@
 #include "tensor.h"
 #include <string>
 #include <vector>
-#include "qwen3.h"
+#include "generic_model.h"
+#include "../qwen3/qwen3.h"
+
+
 
 struct KVCache;
 struct FlashAttnEngine;
 
-//TODO inherit from Qwen3Config?
-struct Qwen3MoeConfig {
+
+struct Qwen3MoeConfig : LanguageConfig {
     int vocab_size;
     int hidden_size;
     int intermediate_size;
@@ -87,7 +90,7 @@ struct Qwen3MoeDecoderLayer {
 };
 
 
-struct Qwen3Moe {
+struct Qwen3Moe : LanguageModel {
     Qwen3MoeConfig config;
     Tensor embed_tokens; 
     std::vector<Qwen3MoeDecoderLayer> layers;
@@ -96,10 +99,11 @@ struct Qwen3Moe {
     Qwen3RotaryEmbedding rotary_embedding;
     Tensor residual;
     
-    static Qwen3Moe from_pretrained(const std::string& hf_dir, int device = 0);
+    static std::unique_ptr<Qwen3Moe> from_pretrained(const std::string& hf_dir, int device = 0);
+    static std::unique_ptr<Qwen3Moe> from_pretrained(const Qwen3MoeConfig& config, int device = 0);
 
 
     Tensor forward(const Tensor& input_ids, Tensor& position_ids,
                     std::vector<KVCache>& kvcache,
-                    FlashAttnEngine& engine);
+                    FlashAttnEngine& engine) override;
 };

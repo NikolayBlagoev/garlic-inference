@@ -1,13 +1,13 @@
 #pragma once
 #include "tensor.h"
 #include <string>
+#include "generic_model.h"
 #include <vector>
-
 
 struct KVCache;
 struct FlashAttnEngine;
 
-struct Qwen3Config {
+struct Qwen3Config : LanguageConfig {
     int vocab_size;
     int hidden_size;
     int intermediate_size;
@@ -74,7 +74,7 @@ struct Qwen3RotaryEmbedding {
     Tensor inv_freq;
 };
 
-struct Qwen3 {
+struct Qwen3 : LanguageModel {
     Qwen3Config config;
     Tensor embed_tokens; 
     std::vector<Qwen3DecoderLayer> layers;
@@ -83,10 +83,11 @@ struct Qwen3 {
     Qwen3RotaryEmbedding rotary_embedding;
     Tensor residual;
     
-    static Qwen3 from_pretrained(const std::string& hf_dir, int device = 0);
+    static std::unique_ptr<Qwen3> from_pretrained(const std::string& hf_dir, int device = 0);
+    static std::unique_ptr<Qwen3> from_pretrained(const Qwen3Config& config, int device = 0);
 
 
     Tensor forward(const Tensor& input_ids, Tensor& position_ids,
                     std::vector<KVCache>& kvcache,
-                    FlashAttnEngine& engine);
+                    FlashAttnEngine& engine) override;
 };

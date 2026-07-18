@@ -1,14 +1,14 @@
 #include "qwen3.h"
 
 
-#include "../src-cuda/embedding.cuh"
-#include "../src-cuda/norm.cuh"
-#include "../src-cuda/rope.cuh"
-#include "../src-cuda/mat-ops.cuh"
-#include "../src-cuda/simple-ops.cuh"
-#include "../src-cuda/activations.cuh"
-#include "../src-cuda/fattn.cuh"
-#include "../kvcache.h"
+#include "embedding.cuh"
+#include "norm.cuh"
+#include "rope.cuh"
+#include "mat-ops.cuh"
+#include "simple-ops.cuh"
+#include "activations.cuh"
+#include "fattn.cuh"
+#include "kvcache.h"
 #include "profiler.h"
 #include <cuda_runtime.h>
 #include <fstream>
@@ -16,7 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include "../external/json.hpp"
+#include "external/json.hpp"
 #include "loader.h"
 
 namespace fs = std::filesystem;
@@ -25,6 +25,7 @@ Qwen3Config Qwen3Config::from_pretrained(const std::string& hf_dir) {
     std::ifstream f(hf_dir + "/config.json");
     json cfg = json::parse(f);
     Qwen3Config c;
+    c.hf_dir = hf_dir;
     c.hidden_size = cfg["hidden_size"].get<int>();
     c.num_hidden_layers = cfg["num_hidden_layers"].get<int>();
     c.num_attention_heads = cfg["num_attention_heads"].get<int>();
@@ -38,38 +39,42 @@ Qwen3Config Qwen3Config::from_pretrained(const std::string& hf_dir) {
     return c;
 };
 
-Qwen3 Qwen3::from_pretrained(const std::string& hf_dir, int device) {
-    Qwen3 model;
-    model.config = Qwen3Config::from_pretrained(hf_dir);
-    ModelLoader wl(hf_dir);
+std::unique_ptr<Qwen3> Qwen3::from_pretrained(const std::string& hf_dir, int device) {
+    return Qwen3::from_pretrained(Qwen3Config::from_pretrained(hf_dir), device);
+}
 
-    model.rotary_embedding.attention_scaling = 1.0f;
-    model.rotary_embedding.inv_freq = Tensor({model.config.head_dim / 2}, CUDA_R_32F, device);
-    initialize_rope(model.config.rope_theta, model.rotary_embedding.inv_freq);
+std::unique_ptr<Qwen3> Qwen3::from_pretrained(const Qwen3Config& config, int device) {
+    auto model = std::make_unique<Qwen3>();
+    model->config = config;
+    ModelLoader wl(model->config.hf_dir);
 
-    model.embed_tokens = wl.load("model.embed_tokens.weight", device);
-    model.norm = wl.load("model.norm.weight", device);
+    model->rotary_embedding.attention_scaling = 1.0f;
+    model->rotary_embedding.inv_freq = Tensor({model->config.head_dim / 2}, CUDA_R_32F, device);
+    initialize_rope(model->config.rope_theta, model->rotary_embedding.inv_freq);
 
-    model.lm_head = model.embed_tokens;
+    model->embed_tokens = wl.load("model.embed_tokens.weight", device);
+    model->norm = wl.load("model.norm.weight", device);
 
-    model.layers.reserve(model.config.num_hidden_layers);
-    for (int i = 0; i < model.config.num_hidden_layers; ++i) {
+    model->lm_head = model->embed_tokens;
+
+    model->layers.reserve(model->config.num_hidden_layers);
+    for (int i = 0; i < model->config.num_hidden_layers; ++i) {
         const std::string lp = "model.layers." + std::to_string(i) + ".";
 
         Qwen3DecoderLayer layer;
         layer.idx = i;
-        layer.rms_norm_eps = model.config.rms_norm_eps;
+        layer.rms_norm_eps = model->config.rms_norm_eps;
 
-        layer.mlp.intermediate_size = model.config.intermediate_size;
+        layer.mlp.intermediate_size = model->config.intermediate_size;
 
 
         layer.input_layernorm = wl.load(lp + "input_layernorm.weight", device);
         layer.post_attention_layernorm = wl.load(lp + "post_attention_layernorm.weight", device);
 
-        layer.self_attn.num_heads = model.config.num_attention_heads;
-        layer.self_attn.head_dim = model.config.head_dim;
-        layer.self_attn.num_kv_heads = model.config.num_key_value_heads;
-        layer.self_attn.rms_norm_eps = model.config.rms_norm_eps;
+        layer.self_attn.num_heads = model->config.num_attention_heads;
+        layer.self_attn.head_dim = model->config.head_dim;
+        layer.self_attn.num_kv_heads = model->config.num_key_value_heads;
+        layer.self_attn.rms_norm_eps = model->config.rms_norm_eps;
         layer.self_attn.q_proj = wl.load(lp + "self_attn.q_proj.weight", device);
         layer.self_attn.k_proj = wl.load(lp + "self_attn.k_proj.weight", device);
         layer.self_attn.v_proj = wl.load(lp + "self_attn.v_proj.weight", device);
@@ -77,7 +82,7 @@ Qwen3 Qwen3::from_pretrained(const std::string& hf_dir, int device) {
 
         layer.self_attn.q_norm = wl.load(lp + "self_attn.q_norm.weight", device);
         layer.self_attn.k_norm = wl.load(lp + "self_attn.k_norm.weight", device);
-        
+
         const WeightContainer& g_meta = wl.peek(lp + "mlp.gate_proj.weight");
         const WeightContainer& u_meta = wl.peek(lp + "mlp.up_proj.weight");
         const WeightContainer& d_meta = wl.peek(lp + "mlp.down_proj.weight");
@@ -95,12 +100,12 @@ Qwen3 Qwen3::from_pretrained(const std::string& hf_dir, int device) {
         layer.mlp.gate_proj = Tensor(g_meta.shape, dv, 0);
         layer.mlp.up_proj = Tensor(u_meta.shape, dv, (uint64_t)(g_elems * elem_sz));
         layer.mlp.down_proj = Tensor(d_meta.shape, dv, (uint64_t)((g_elems + u_elems) * elem_sz));
-        
+
         wl.load_scale(lp + "mlp.gate_proj.weight", layer.mlp.gate_proj);
         wl.load_scale(lp + "mlp.up_proj.weight",   layer.mlp.up_proj);
         wl.load_scale(lp + "mlp.down_proj.weight",  layer.mlp.down_proj);
 
-        model.layers.push_back(std::move(layer));
+        model->layers.push_back(std::move(layer));
     }
 
     return model;
