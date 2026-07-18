@@ -25,8 +25,11 @@ Currently supports:
 ## BUILD AND RUN:
 
 ```bash
-cmake -B build -DRUN_TEST=qwen3-moe && cmake --build build && ./build/runner
+cmake -B build && cmake --build build
+./build/runner [MODEL DIRECTORY]
 ```
+
+You should download a model first (for now only Qwen3 and Qwen3 MoE models are supported). I recommend trying with: https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
 
 ## ABOUT GARLIC:
 
